@@ -1,0 +1,1473 @@
+openapi: 3.0.3
+info:
+  title: Reservas - API (frontend y otros microservicios)
+  version: 1.0.0
+  description: 'Cubre las HU de Reservas que se exponen por HTTP: bloqueo de asientos como lo usa el cliente (HU-11,
+    HU-12), reservas (HU-14, HU-16), cupones (HU-17, HU-18), cancelaciones (HU-26, HU-27, HU-28) y limite de compra
+    (HU-33). El ciclo de vida de la reserva (HU-15) no tiene endpoint propio: es consecuencia de estas operaciones
+    y de los eventos de Pagos. Las rutas /api/v1 las consume el frontend por el gateway y las /internal las consumen
+    Pagos, Inventario, Catalogo e Identidad.'
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+- url: http://reservas:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Reservas
+- name: Limites
+- name: Liquidacion
+- name: Bloqueos
+- name: Cupones
+- name: Cancelaciones
+- name: Reportes
+paths:
+  /internal/reservas/{reservaId}/cobro:
+    get:
+      tags:
+      - Reservas
+      operationId: obtenerReservaParaCobro
+      summary: Obtener los datos de una reserva para cobrarla
+      description: |
+        Pagos lo usa al iniciar un pago y al procesar la notificacion de la pasarela. Pagos
+        decide si cobra: solo se cobra una reserva PENDIENTE_PAGO con bloqueo vigente, por el
+        total congelado al crear la reserva. Tambien se usa para detectar montos distintos
+        (pago EN_REVISION) y pagos sobre reservas ya EXPIRADAS o CANCELADAS.
+      x-hu:
+      - HU-14
+      - HU-15
+      x-llamado-por:
+      - pagos
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Datos de cobro de la reserva
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservaParaCobro'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+  /internal/clientes/{clienteId}/eventos/{eventoId}/cupo-compra:
+    get:
+      tags:
+      - Limites
+      operationId: obtenerCupoCompra
+      summary: Obtener cuantas entradas mas puede comprar un cliente en un evento
+      description: |
+        Inventario lo usa al unir un cliente a la lista de espera y al ofrecerle cupos, porque
+        solo puede participar quien cumple su limite de compra. El limite efectivo es el del
+        evento (6 por defecto, entre 1 y 10) o 4 si la fase es PREVENTA y es menor. Cuentan los
+        asientos bloqueados, las reservas PENDIENTE_PAGO y las CONFIRMADAS; no cuentan las
+        canceladas, las cortesias ni las entradas recibidas por transferencia.
+      x-hu:
+      - HU-33
+      x-llamado-por:
+      - inventario
+      parameters:
+      - name: clienteId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Cupo de compra del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CupoCompra'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+  /internal/eventos/{eventoId}/resumen-liquidacion:
+    get:
+      tags:
+      - Liquidacion
+      operationId: obtenerResumenLiquidacionEvento
+      summary: Obtener las ventas liquidables de un evento
+      description: |
+        Pagos lo usa para liquidar al organizador. Solo cuentan las reservas FINALIZADAS y no
+        se incluyen cortesias. Separa los descuentos de cupones segun quien los financia
+        (organizador o plataforma): solo los del organizador reducen la base de comision y
+        su liquidacion. Los reembolsos y contracargos los conoce Pagos.
+      x-hu:
+      - HU-15
+      - HU-17
+      - HU-18
+      x-llamado-por:
+      - pagos
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Resumen de ventas liquidables
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumenLiquidacionEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: EVENTO_NO_FINALIZADO; solo se liquidan eventos finalizados.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+  /api/v1/eventos/{eventoId}/bloqueos:
+    post:
+      tags:
+      - Bloqueos
+      operationId: bloquearAsientos
+      summary: Bloquear asientos temporalmente
+      description: 'Reservas valida al cliente (ACTIVO, correo verificado, no organizador del evento) y su limite
+        de compra, y pide a Inventario el bloqueo de 10 minutos: se bloquean todos los asientos o ninguno. Solo
+        se bloquea lo DISPONIBLE de eventos EN_VENTA.'
+      x-hu:
+      - HU-11
+      - HU-33
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - ORGANIZADOR
+      parameters:
+      - &id003
+        name: eventoId
+        in: path
+        required: true
+        schema: &id002
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BloqueoCrear'
+      responses:
+        '201':
+          description: Asientos bloqueados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BloqueoCreado'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: &id001
+                $ref: '#/components/schemas/Problema'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ASIENTO_NO_DISPONIBLE o CAPACIDAD_INSUFICIENTE
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: EVENTO_NO_EN_VENTA, LIMITE_DE_COMPRA_EXCEDIDO, CLIENTE_NO_ACTIVO, ORGANIZADOR_NO_PUEDE_COMPRAR_SU_EVENTO
+            o RESERVAS_PENDIENTES_EXCEDIDAS (maximo 3) o BLOQUEO_TEMPORAL_POR_EXPIRACIONES
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/bloqueos/{bloqueoId}:
+    delete:
+      tags:
+      - Bloqueos
+      operationId: liberarMisAsientos
+      summary: Liberar mis asientos bloqueados
+      description: Liberacion voluntaria antes del vencimiento. Es idempotente.
+      x-hu:
+      - HU-12
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - ORGANIZADOR
+      parameters:
+      - name: bloqueoId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '204':
+          description: Asientos liberados
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: BLOQUEO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: BLOQUEO_YA_CONVERTIDO_EN_RESERVA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/reservas:
+    post:
+      tags:
+      - Reservas
+      operationId: crearReserva
+      summary: Crear una reserva
+      description: Sobre un bloqueo vigente del mismo cliente. Nace PENDIENTE_PAGO con precios, descuentos, cargo
+        e impuestos congelados (se obtienen de Catalogo). Tambien acepta el bloqueo de una oferta de lista de espera.
+      x-hu:
+      - HU-14
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - ORGANIZADOR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReservaCrear'
+      responses:
+        '201':
+          description: Reserva creada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reserva'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: BLOQUEO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: BLOQUEO_VENCIDO o BLOQUEO_YA_USADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: LIMITE_DE_COMPRA_EXCEDIDO, ASISTENTES_REQUERIDOS, DOCUMENTO_DUPLICADO, MAYORIA_DE_EDAD_REQUERIDA
+            o ORGANIZADOR_NO_PUEDE_COMPRAR_SU_EVENTO
+          content:
+            application/problem+json:
+              schema: *id001
+    get:
+      tags:
+      - Reservas
+      operationId: listarMisReservas
+      summary: Listar mis reservas
+      description: El cliente solo ve las suyas. Soporte y administrador pueden filtrar por cliente.
+      x-hu:
+      - HU-16
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - SOPORTE
+      - ADMIN
+      parameters:
+      - &id004
+        name: pagina
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - &id005
+        name: tamanio
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: estado
+        in: query
+        required: false
+        schema: &id008
+          type: string
+          enum:
+          - PENDIENTE_PAGO
+          - CONFIRMADA
+          - EXPIRADA
+          - CANCELADA
+          - CANCELADA_POR_EVENTO
+          - FINALIZADA
+      - name: clienteId
+        in: query
+        required: false
+        schema: *id002
+      responses:
+        '200':
+          description: Reservas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaReservas'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/reservas/{reservaId}:
+    get:
+      tags:
+      - Reservas
+      operationId: obtenerReserva
+      summary: Ver el detalle de una reserva
+      description: Estado, desglose, tiempo restante del bloqueo, politica de cancelacion y reembolso estimado.
+        El medio de pago se muestra enmascarado. Una reserva ajena se trata como inexistente.
+      x-hu:
+      - HU-16
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - SOPORTE
+      - ADMIN
+      parameters:
+      - &id006
+        name: reservaId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '200':
+          description: Reserva
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reserva'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: RESERVA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/reservas:
+    get:
+      tags:
+      - Reservas
+      operationId: listarReservasDeMiEvento
+      summary: Ver las reservas de mi evento
+      description: Solo el organizador del evento; ve nombre del cliente y cantidad, sin datos de pago ni contacto.
+      x-hu:
+      - HU-16
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id003
+      - *id004
+      - *id005
+      responses:
+        '200':
+          description: Reservas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaReservasOrganizador'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/cupones:
+    post:
+      tags:
+      - Cupones
+      operationId: crearCupon
+      summary: Crear un cupon
+      description: El codigo es unico sin distinguir mayusculas. El organizador solo crea cupones para sus eventos
+        y financiados por el.
+      x-hu:
+      - HU-17
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      - ORGANIZADOR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CuponCrear'
+      responses:
+        '201':
+          description: Cupon creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cupon'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CODIGO_DUPLICADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: VIGENCIA_INVALIDA, VALOR_INVALIDO o ALCANCE_NO_PERMITIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/cupones/{cuponId}/desactivacion:
+    post:
+      tags:
+      - Cupones
+      operationId: desactivarCupon
+      summary: Desactivar un cupon
+      description: Un cupon con usos registrados no se elimina, solo se desactiva.
+      x-hu:
+      - HU-17
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      - ORGANIZADOR
+      parameters:
+      - name: cuponId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '200':
+          description: Cupon desactivado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cupon'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: CUPON_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/reservas/{reservaId}/cupon:
+    post:
+      tags:
+      - Cupones
+      operationId: aplicarCupon
+      summary: Aplicar un cupon a una reserva
+      description: Solo en PENDIENTE_PAGO, un cupon por reserva. Valida vigencia, alcance, usos, monto minimo y
+        primera compra. El descuento recae sobre el subtotal de entradas, nunca sobre el cargo por servicio. El
+        uso se reserva al aplicar y se consume al confirmar el pago.
+      x-hu:
+      - HU-18
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - *id006
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CuponAplicar'
+      responses:
+        '200':
+          description: Cupon aplicado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reserva'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: RESERVA_NO_ENCONTRADA o CUPON_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: RESERVA_NO_PENDIENTE_PAGO, CUPON_YA_APLICADO o USOS_AGOTADOS
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: CUPON_VENCIDO, CUPON_FUERA_DE_ALCANCE, MONTO_MINIMO_NO_ALCANZADO, LIMITE_POR_CLIENTE o NO_ES_PRIMERA_COMPRA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/reservas/{reservaId}/cancelacion:
+    post:
+      tags:
+      - Cancelaciones
+      operationId: cancelarReserva
+      summary: Cancelar una reserva
+      description: 'PENDIENTE_PAGO: se cancela sin reembolso, se liberan los asientos y se devuelve el cupon (no
+        con un pago en proceso o en revision). CONFIRMADA: solo antes del evento y sin entradas usadas ni transferidas;
+        se aplica la politica del evento y la cancelacion es siempre de la reserva completa. Reservas anula las
+        entradas en Entradas, libera asientos en Inventario y pide el reembolso a Pagos.'
+      x-hu:
+      - HU-26
+      - HU-27
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - *id006
+      responses:
+        '200':
+          description: Reserva cancelada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelacionResultado'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: RESERVA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: RESERVA_NO_CANCELABLE, PAGO_EN_PROCESO, ENTRADAS_USADAS o ENTRADAS_TRANSFERIDAS
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: EVENTO_YA_INICIADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/reservas/{reservaId}/reembolso-reprogramacion:
+    post:
+      tags:
+      - Cancelaciones
+      operationId: solicitarReembolsoPorReprogramacion
+      summary: Pedir reembolso por reprogramacion del evento
+      description: Solo reservas CONFIRMADAS de un evento reprogramado, una sola vez, dentro de 7 dias desde la
+        notificacion o hasta 24 horas antes de la nueva fecha. Reembolsa el 100% incluido el cargo por servicio.
+        No aplica si alguna entrada fue transferida.
+      x-hu:
+      - HU-28
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - *id006
+      responses:
+        '200':
+          description: Reembolso solicitado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReembolsoReprogramacionResultado'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: RESERVA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: REEMBOLSO_YA_SOLICITADO o ENTRADAS_TRANSFERIDAS
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: EVENTO_NO_REPROGRAMADO o PLAZO_VENCIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /internal/eventos/{eventoId}/resumen-ventas:
+    get:
+      tags:
+      - Reportes
+      operationId: obtenerResumenVentasEvento
+      summary: Obtener las ventas de un evento para el reporte del organizador
+      description: |
+        Pagos lo usa para armar el reporte de ventas (HU-42). A diferencia del resumen de liquidacion, cuenta las
+        reservas CONFIRMADAS y FINALIZADAS (no solo las FINALIZADAS), excluye las cortesias y desglosa por zona,
+        fase de venta y cupon. Los reembolsos y la comision los conoce Pagos.
+      x-hu:
+      - HU-42
+      x-llamado-por:
+      - pagos
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Resumen de ventas del evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumenVentasEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+  /internal/eventos/{eventoId}/estado-reservas:
+    get:
+      tags:
+      - Reservas
+      operationId: obtenerEstadoReservasEvento
+      summary: Saber cuantas reservas vivas tiene un evento
+      description: |
+        Catalogo lo usa para no permitir el cambio de sede de un evento que ya tiene reservas confirmadas (HU-05).
+        Es solo una consulta: Catalogo decide. Si el evento no tiene reservas devuelve ceros.
+      x-hu:
+      - HU-05
+      x-llamado-por:
+      - catalogo
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Conteo de reservas del evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstadoReservasEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+  /internal/clientes/{clienteId}/reservas-pendientes:
+    get:
+      tags:
+      - Reservas
+      operationId: obtenerReservasPendientesCliente
+      summary: Saber si un cliente tiene reservas pendientes de pago
+      description: |
+        Identidad lo usa al eliminar una cuenta: no puede eliminarse si el cliente tiene reservas pendientes
+        (HU-32). Las entradas validas de eventos futuros las informa Entradas.
+      x-hu:
+      - HU-32
+      x-llamado-por:
+      - identidad
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://reservas:8080
+      parameters:
+      - name: clienteId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Reservas pendientes del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReservasPendientesCliente'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las
+        HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+  parameters:
+    ReservaId:
+      name: reservaId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+  responses:
+    NoAutorizado:
+      description: Token de servicio ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoEncontrado:
+      description: El recurso no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.
+    ReservaParaCobro:
+      type: object
+      required:
+      - reservaId
+      - codigo
+      - clienteId
+      - eventoId
+      - estado
+      - bloqueoId
+      - bloqueoExpiraEn
+      - bloqueoVigente
+      - cantidadEntradas
+      - desglose
+      - moneda
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+        codigo:
+          type: string
+          description: Codigo unico y legible de la reserva.
+        clienteId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_PAGO
+          - CONFIRMADA
+          - EXPIRADA
+          - CANCELADA
+          - CANCELADA_POR_EVENTO
+          - FINALIZADA
+        bloqueoId:
+          type: string
+          format: uuid
+        bloqueoExpiraEn:
+          type: string
+          format: date-time
+        bloqueoVigente:
+          type: boolean
+        cantidadEntradas:
+          type: integer
+          minimum: 1
+        desglose:
+          $ref: '#/components/schemas/Desglose'
+        moneda:
+          type: string
+          enum:
+          - PEN
+    Desglose:
+      type: object
+      description: Montos congelados al crear la reserva; no cambian despues.
+      required:
+      - subtotalEntradas
+      - descuento
+      - cargoServicio
+      - igvIncluido
+      - total
+      properties:
+        subtotalEntradas:
+          $ref: '#/components/schemas/Monto'
+        descuento:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        total:
+          $ref: '#/components/schemas/Monto'
+    CupoCompra:
+      type: object
+      required:
+      - clienteId
+      - eventoId
+      - limiteEfectivo
+      - enUso
+      - restante
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        limiteEfectivo:
+          type: integer
+          minimum: 1
+          maximum: 10
+        enUso:
+          type: object
+          required:
+          - bloqueadas
+          - enReservasPendientes
+          - confirmadas
+          properties:
+            bloqueadas:
+              type: integer
+              minimum: 0
+            enReservasPendientes:
+              type: integer
+              minimum: 0
+            confirmadas:
+              type: integer
+              minimum: 0
+        restante:
+          type: integer
+          minimum: 0
+          description: Entradas que aun puede comprar el cliente en el evento.
+    ResumenLiquidacionEvento:
+      type: object
+      required:
+      - eventoId
+      - reservasFinalizadas
+      - entradasVendidas
+      - ventasBrutasEntradas
+      - descuentosFinanciadosOrganizador
+      - descuentosFinanciadosPlataforma
+      - cargoServicio
+      - igvIncluido
+      - corteEn
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        reservasFinalizadas:
+          type: integer
+          minimum: 0
+        entradasVendidas:
+          type: integer
+          minimum: 0
+        ventasBrutasEntradas:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosOrganizador:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosPlataforma:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        corteEn:
+          type: string
+          format: date-time
+    Problema:
+      type: object
+      required:
+      - codigo
+      - titulo
+      - estado
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo RESERVA_NO_ENCONTRADA).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer
+    ItemNumerado:
+      type: object
+      properties:
+        zonaId: *id002
+        asientoIds:
+          type: array
+          items: *id002
+          minItems: 1
+      required:
+      - zonaId
+      - asientoIds
+    ItemGeneral:
+      type: object
+      properties:
+        zonaId: *id002
+        cantidad:
+          type: integer
+          minimum: 1
+      required:
+      - zonaId
+      - cantidad
+    BloqueoCrear:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/ItemNumerado'
+            - $ref: '#/components/schemas/ItemGeneral'
+          minItems: 1
+      required:
+      - items
+    BloqueoCreado:
+      type: object
+      properties:
+        bloqueoId: *id002
+        eventoId: *id002
+        estado:
+          type: string
+          enum:
+          - VIGENTE
+        expiraEn:
+          type: string
+          format: date-time
+          description: 10 minutos desde la creacion.
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              zonaId: *id002
+              cantidad: &id010
+                type: integer
+              asientoIds:
+                type: array
+                items: *id002
+      required:
+      - bloqueoId
+      - eventoId
+      - estado
+      - expiraEn
+    AsistenteDatos:
+      type: object
+      properties:
+        asientoId: *id002
+        nombreCompleto: &id007
+          type: string
+        tipoDocumento:
+          type: string
+          enum:
+          - DNI
+          - CARNE_EXTRANJERIA
+          - PASAPORTE
+        numeroDocumento: *id007
+      required:
+      - nombreCompleto
+      - numeroDocumento
+    ReservaCrear:
+      type: object
+      properties:
+        bloqueoId:
+          type: string
+          format: uuid
+          description: Bloqueo vigente creado por el mismo cliente, o bloqueo de una oferta de lista de espera.
+        asistentes:
+          type: array
+          items:
+            $ref: '#/components/schemas/AsistenteDatos'
+          description: 'Obligatorio en eventos nominativos: nombre y documento por entrada, sin repetir documento
+            en el evento.'
+        declaraMayoriaEdad:
+          type: boolean
+          description: Obligatorio en eventos +18.
+        codigoAccesoPreventa: *id007
+      required:
+      - bloqueoId
+    Reserva:
+      type: object
+      properties:
+        reservaId: *id002
+        codigo: *id007
+        eventoId: *id002
+        estado: *id008
+        bloqueoId: *id002
+        bloqueoExpiraEn:
+          type: string
+          format: date-time
+          nullable: true
+        tiempoRestanteSegundos:
+          type: integer
+          nullable: true
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              zonaId: *id002
+              asientoId:
+                type: string
+                format: uuid
+                nullable: true
+              precioUnitario: &id009
+                $ref: '#/components/schemas/Monto'
+        cupon:
+          type: object
+          properties:
+            codigo: *id007
+            descuento: *id009
+          nullable: true
+        desglose:
+          $ref: '#/components/schemas/Desglose'
+        moneda:
+          type: string
+          enum:
+          - PEN
+        politicaCancelacion:
+          type: string
+          enum:
+          - ESTANDAR
+          - FLEXIBLE
+          - NO_REEMBOLSABLE
+        reembolsoEstimado:
+          $ref: '#/components/schemas/Monto'
+          nullable: true
+        medioPago:
+          type: object
+          properties:
+            tipo: *id007
+            ultimos4: *id007
+          nullable: true
+        creadaEn: &id011
+          type: string
+          format: date-time
+      required:
+      - reservaId
+      - codigo
+      - eventoId
+      - estado
+      - desglose
+      - moneda
+      - creadaEn
+    ReservaResumen:
+      type: object
+      properties:
+        reservaId: *id002
+        codigo: *id007
+        eventoId: *id002
+        estado: *id008
+        total: *id009
+        cantidadEntradas: *id010
+        creadaEn: *id011
+      required:
+      - reservaId
+      - codigo
+      - eventoId
+      - estado
+      - total
+      - creadaEn
+    PaginaReservas:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReservaResumen'
+        pagina: *id010
+        tamanio: *id010
+        total: *id010
+      required:
+      - items
+      - pagina
+      - tamanio
+      - total
+    ReservaOrganizador:
+      type: object
+      properties:
+        reservaId: *id002
+        codigo: *id007
+        nombreCliente: *id007
+        cantidadEntradas: *id010
+        estado: *id008
+        creadaEn: *id011
+      required:
+      - reservaId
+      - codigo
+      - nombreCliente
+      - cantidadEntradas
+      - estado
+    PaginaReservasOrganizador:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReservaOrganizador'
+        pagina: *id010
+        tamanio: *id010
+        total: *id010
+      required:
+      - items
+      - pagina
+      - tamanio
+      - total
+    CuponCrear:
+      type: object
+      properties:
+        codigo:
+          type: string
+          pattern: ^[A-Za-z0-9]{4,20}$
+        tipo:
+          type: string
+          enum:
+          - PORCENTAJE
+          - MONTO_FIJO
+        valor:
+          type: number
+          minimum: 0.01
+          description: Porcentaje entre 1 y 100, o monto fijo mayor a 0.
+        vigenteDesde: *id011
+        vigenteHasta: *id011
+        alcance:
+          type: object
+          properties:
+            tipo:
+              type: string
+              enum:
+              - GLOBAL
+              - ORGANIZADOR
+              - EVENTO
+              - ZONA
+            id: *id002
+          required:
+          - tipo
+        usosMaximos: *id010
+        usosPorCliente: *id010
+        montoMinimo: *id009
+        topeDescuento: *id009
+        financiadoPor:
+          type: string
+          enum:
+          - PLATAFORMA
+          - ORGANIZADOR
+        primeraCompra:
+          type: boolean
+      required:
+      - codigo
+      - tipo
+      - valor
+      - vigenteDesde
+      - vigenteHasta
+      - alcance
+      - usosMaximos
+      - usosPorCliente
+      - financiadoPor
+    Cupon:
+      type: object
+      properties:
+        cuponId: *id002
+        codigo: *id007
+        tipo: *id007
+        valor: *id009
+        estado:
+          type: string
+          enum:
+          - ACTIVO
+          - INACTIVO
+          - AGOTADO
+          - VENCIDO
+        usosConsumidos: *id010
+        financiadoPor: *id007
+      required:
+      - cuponId
+      - codigo
+      - tipo
+      - valor
+      - estado
+    CuponAplicar:
+      type: object
+      properties:
+        codigo: *id007
+      required:
+      - codigo
+    CancelacionResultado:
+      type: object
+      properties:
+        reservaId: *id002
+        estado:
+          type: string
+          enum:
+          - CANCELADA
+        montoReembolso:
+          $ref: '#/components/schemas/Monto'
+          description: 0 si no corresponde reembolso. El reembolso se tramita en Pagos.
+        politicaAplicada:
+          type: string
+          enum:
+          - ESTANDAR
+          - FLEXIBLE
+          - NO_REEMBOLSABLE
+      required:
+      - reservaId
+      - estado
+      - montoReembolso
+    ReembolsoReprogramacionResultado:
+      type: object
+      properties:
+        reservaId: *id002
+        montoReembolso: *id009
+      required:
+      - reservaId
+      - montoReembolso
+    ResumenVentasEvento:
+      type: object
+      required: [eventoId, reservasConfirmadas, reservasFinalizadas, entradasVendidas, ventasBrutasEntradas, descuentosFinanciadosOrganizador, descuentosFinanciadosPlataforma, cargoServicio, igvIncluido, porZona, porFase, porCupon, corteEn]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        reservasConfirmadas:
+          type: integer
+          minimum: 0
+        reservasFinalizadas:
+          type: integer
+          minimum: 0
+        entradasVendidas:
+          type: integer
+          minimum: 0
+        ventasBrutasEntradas:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosOrganizador:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosPlataforma:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        porZona:
+          type: array
+          items:
+            type: object
+            required: [zonaId, entradasVendidas, ventasBrutasEntradas, descuentos]
+            properties:
+              zonaId:
+                type: string
+                format: uuid
+              entradasVendidas:
+                type: integer
+                minimum: 0
+              ventasBrutasEntradas:
+                $ref: '#/components/schemas/Monto'
+              descuentos:
+                $ref: '#/components/schemas/Monto'
+        porFase:
+          type: array
+          items:
+            type: object
+            required: [fase, entradasVendidas, ventasBrutasEntradas, descuentos]
+            properties:
+              fase:
+                type: string
+                enum: [PREVENTA, GENERAL, ULTIMA_HORA]
+              entradasVendidas:
+                type: integer
+                minimum: 0
+              ventasBrutasEntradas:
+                $ref: '#/components/schemas/Monto'
+              descuentos:
+                $ref: '#/components/schemas/Monto'
+        porCupon:
+          type: array
+          items:
+            type: object
+            required: [codigo, usos, descuentoTotal, financiadoPor]
+            properties:
+              codigo:
+                type: string
+              usos:
+                type: integer
+                minimum: 0
+              descuentoTotal:
+                $ref: '#/components/schemas/Monto'
+              financiadoPor:
+                type: string
+                enum: [PLATAFORMA, ORGANIZADOR]
+        corteEn:
+          type: string
+          format: date-time
+    EstadoReservasEvento:
+      type: object
+      required: [eventoId, pendientesPago, confirmadas, tieneReservasConfirmadas]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        pendientesPago:
+          type: integer
+          minimum: 0
+        confirmadas:
+          type: integer
+          minimum: 0
+        tieneReservasConfirmadas:
+          type: boolean
+    ReservasPendientesCliente:
+      type: object
+      required: [clienteId, reservasPendientesPago, tieneReservasPendientes]
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        reservasPendientesPago:
+          type: integer
+          minimum: 0
+        tieneReservasPendientes:
+          type: boolean

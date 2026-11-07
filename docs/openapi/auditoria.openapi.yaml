@@ -1,0 +1,212 @@
+openapi: 3.0.3
+info:
+  title: Auditoria - API (frontend)
+  version: 1.0.0
+  description: |
+    Cubre la parte de la HU-41 que se expone por HTTP: la consulta de la auditoria por parte del administrador.
+
+    El registro de las operaciones NO tiene endpoint: Auditoria lo alimenta consumiendo los eventos de los demas
+    servicios (cambios de estado de reservas, pagos, reembolsos, cambios de precio, cupones, roles, bloqueos de
+    clientes y liquidaciones). Por eso el servicio no ofrece ninguna operacion para crear, editar ni eliminar
+    registros: son inmutables y se conservan 5 anos. Las acciones automaticas se registran con actor SISTEMA y
+    no se guardan datos sensibles de pago.
+
+    Las rutas /api/v1 las consume el frontend por el gateway.
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+tags:
+- name: Auditoria
+paths:
+  /api/v1/auditoria:
+    get:
+      tags: [Auditoria]
+      operationId: consultarAuditoria
+      summary: Consultar los registros de auditoria
+      description: |
+        Se consulta por cliente, reserva, evento, organizador y rango de fechas; los filtros se pueden combinar. Debe
+        enviarse al menos uno para no recorrer todo el historico. Cada registro indica quien, que, cuando, el valor
+        anterior, el valor nuevo y el motivo. Orden: del mas reciente al mas antiguo.
+      x-hu: [HU-41]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - name: clienteId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: reservaId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: eventoId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: organizadorId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: desde
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: hasta
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date-time
+      - name: entidad
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/EntidadAuditada'
+      - name: pagina
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: tamanio
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      responses:
+        '200':
+          description: Registros de auditoria
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaAuditoria'
+        '400':
+          description: FILTROS_REQUERIDOS (ningun filtro enviado) o RANGO_DE_FECHAS_INVALIDO (hasta anterior a desde).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '403':
+          description: El rol no permite esta operacion (solo ADMIN)
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las HU).
+  schemas:
+    EntidadAuditada:
+      type: string
+      enum: [RESERVA, PAGO, REEMBOLSO, PRECIO, CUPON, ROL, BLOQUEO_CLIENTE, LIQUIDACION]
+    ActorTipo:
+      type: string
+      enum: [CLIENTE, ORGANIZADOR, SOPORTE, ADMIN, SISTEMA]
+    RegistroAuditoria:
+      type: object
+      required: [registroId, entidad, entidadId, accion, actorTipo, ocurridoEn, servicioOrigen]
+      properties:
+        registroId:
+          type: string
+          format: uuid
+        entidad:
+          $ref: '#/components/schemas/EntidadAuditada'
+        entidadId:
+          type: string
+          format: uuid
+        accion:
+          type: string
+          description: Que se hizo (por ejemplo RESERVA_CANCELADA, REEMBOLSO_APROBADO, PRECIO_MODIFICADO).
+        actorTipo:
+          $ref: '#/components/schemas/ActorTipo'
+        actorId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Nulo cuando el actor es SISTEMA.
+        clienteId:
+          type: string
+          format: uuid
+          nullable: true
+        reservaId:
+          type: string
+          format: uuid
+          nullable: true
+        eventoId:
+          type: string
+          format: uuid
+          nullable: true
+        organizadorId:
+          type: string
+          format: uuid
+          nullable: true
+        valorAnterior:
+          type: object
+          additionalProperties: true
+          nullable: true
+          description: Estado previo. Nunca incluye datos sensibles de pago.
+        valorNuevo:
+          type: object
+          additionalProperties: true
+          nullable: true
+        motivo:
+          type: string
+          nullable: true
+        servicioOrigen:
+          type: string
+          enum: [identidad, catalogo, inventario, reservas, entradas, pagos]
+        ocurridoEn:
+          type: string
+          format: date-time
+    PaginaAuditoria:
+      type: object
+      required: [items, pagina, tamanio, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RegistroAuditoria'
+        pagina:
+          type: integer
+        tamanio:
+          type: integer
+        total:
+          type: integer
+    Problema:
+      type: object
+      required: [codigo, titulo, estado]
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo FILTROS_REQUERIDOS).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer

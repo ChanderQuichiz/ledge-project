@@ -1,0 +1,1151 @@
+openapi: 3.0.3
+info:
+  title: Identidad - API (frontend y otros microservicios)
+  version: 1.0.0
+  description: 'Cubre las HU de Identidad que se exponen por HTTP: registro de clientes (HU-32), bloqueos y apelaciones
+    (HU-34) y roles y personal de puerta (HU-35). Las rutas /api/v1 las consume el frontend por el gateway y las
+    /internal las consumen otros microservicios. La emision de tokens (login) no corresponde a ninguna HU y no se
+    incluye.'
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+- url: http://identidad:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Clientes
+- name: Roles
+- name: Bloqueos
+paths:
+  /internal/clientes/{clienteId}/estado:
+    get:
+      tags:
+      - Clientes
+      operationId: obtenerEstadoCliente
+      summary: Obtener el estado del cliente para decidir si puede operar
+      description: |
+        Permite a otros servicios validar que el cliente este ACTIVO, con correo verificado
+        y sin bloqueo vigente antes de bloquear asientos, reservar, ofrecer lista de espera
+        o recibir una transferencia. Tambien informa los roles, para impedir que un
+        organizador compre entradas de sus propios eventos.
+      x-hu:
+      - HU-32
+      - HU-34
+      - HU-35
+      x-llamado-por:
+      - reservas
+      - inventario
+      - entradas
+      parameters:
+      - $ref: '#/components/parameters/ClienteId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Estado actual del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstadoCliente'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://identidad:8080
+  /internal/clientes/{clienteId}/contacto:
+    get:
+      tags:
+      - Clientes
+      operationId: obtenerContactoCliente
+      summary: Obtener datos de contacto y documento del cliente
+      description: |
+        Entrega el nombre, el correo y el documento de identidad. Notificaciones lo usa para
+        enviar avisos y Pagos lo usa para emitir la boleta (que requiere documento valido).
+      x-hu:
+      - HU-32
+      x-llamado-por:
+      - notificaciones
+      - pagos
+      parameters:
+      - $ref: '#/components/parameters/ClienteId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Datos de contacto
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContactoCliente'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '410':
+          description: Cliente ELIMINADO; sus datos personales fueron anonimizados
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://identidad:8080
+  /internal/clientes:
+    get:
+      tags:
+      - Clientes
+      operationId: buscarClientePorCorreo
+      summary: Buscar un cliente registrado por su correo
+      description: |
+        Entradas lo usa al transferir una entrada, porque el destinatario debe ser un cliente
+        registrado, ACTIVO y con correo verificado. La busqueda no distingue mayusculas.
+      x-hu:
+      - HU-32
+      x-llamado-por:
+      - entradas
+      parameters:
+      - name: correo
+        in: query
+        required: true
+        schema:
+          type: string
+          format: email
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Cliente encontrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResumenCliente'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://identidad:8080
+  /internal/usuarios/{usuarioId}/asignaciones-puerta/{eventoId}:
+    get:
+      tags:
+      - Roles
+      operationId: consultarAsignacionPuerta
+      summary: Consultar si un usuario es personal de puerta asignado a un evento
+      description: |
+        Entradas lo usa antes de validar una entrada en puerta. El personal solo valida
+        entradas del evento al que esta asignado. La ventana horaria (2 horas antes del
+        inicio y 2 horas despues del fin) la evalua Entradas con las fechas que entrega Catalogo.
+      x-hu:
+      - HU-35
+      x-llamado-por:
+      - entradas
+      parameters:
+      - name: usuarioId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Resultado de la asignacion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsignacionPuerta'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://identidad:8080
+  /api/v1/clientes:
+    post:
+      tags:
+      - Clientes
+      operationId: registrarCliente
+      summary: Registrar un cliente
+      description: Crea la cuenta en estado PENDIENTE_VERIFICACION. El correo es unico sin distinguir mayusculas
+        y solo se registran mayores de 18 anios. El cliente no puede bloquear ni comprar hasta verificar el correo;
+        si no lo verifica en 24 horas pierde el registro.
+      x-hu:
+      - HU-32
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ClienteRegistro'
+      responses:
+        '201':
+          description: Cliente creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: &id001
+                $ref: '#/components/schemas/Problema'
+        '409':
+          description: CORREO_YA_REGISTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: MENOR_DE_EDAD o DOCUMENTO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/verificacion-correo:
+    post:
+      tags:
+      - Clientes
+      operationId: verificarCorreo
+      summary: Verificar el correo del cliente
+      description: Pasa la cuenta a ACTIVO si el token es valido y no vencio (24 horas).
+      x-hu:
+      - HU-32
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificacionCorreoSolicitud'
+      responses:
+        '204':
+          description: Correo verificado
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: TOKEN_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+        '410':
+          description: TOKEN_EXPIRADO; el registro se perdio y debe repetirse
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/me:
+    get:
+      tags:
+      - Clientes
+      operationId: obtenerMiPerfil
+      summary: Consultar mi perfil
+      description: Devuelve los datos del cliente autenticado.
+      x-hu:
+      - HU-32
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      - ORGANIZADOR
+      - STAFF_PUERTA
+      - SOPORTE
+      - ADMIN
+      responses:
+        '200':
+          description: Perfil
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+    delete:
+      tags:
+      - Clientes
+      operationId: eliminarMiCuenta
+      summary: Eliminar mi cuenta
+      description: Anonimiza los datos personales y conserva las transacciones por obligacion tributaria.
+      x-hu:
+      - HU-32
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      responses:
+        '204':
+          description: Cuenta eliminada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CUENTA_CON_RESERVAS_PENDIENTES o CUENTA_CON_ENTRADAS_FUTURAS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/me/documento:
+    put:
+      tags:
+      - Clientes
+      operationId: registrarMiDocumento
+      summary: Registrar o actualizar mi documento de identidad
+      description: El documento valido (DNI, carne de extranjeria o pasaporte) es requisito para emitir boleta.
+      x-hu:
+      - HU-32
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DocumentoIdentidad'
+      responses:
+        '200':
+          description: Documento registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: DOCUMENTO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/{clienteId}/bloqueo:
+    post:
+      tags:
+      - Bloqueos
+      operationId: bloquearCliente
+      summary: Bloquear a un cliente
+      description: Bloqueo temporal (24 horas) o permanente segun la causal. Cancela sus reservas PENDIENTE_PAGO
+        y libera sus asientos; las CONFIRMADAS se mantienen salvo fraude confirmado. El motivo es obligatorio y
+        se informa al cliente.
+      x-hu:
+      - HU-34
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - &id002
+        name: clienteId
+        in: path
+        required: true
+        schema: &id003
+          type: string
+          format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BloqueoClienteSolicitud'
+      responses:
+        '200':
+          description: Cliente bloqueado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: CLIENTE_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CLIENTE_YA_BLOQUEADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/{clienteId}/desbloqueo:
+    post:
+      tags:
+      - Bloqueos
+      operationId: desbloquearCliente
+      summary: Desbloquear a un cliente
+      description: Solo un administrador, con motivo obligatorio.
+      x-hu:
+      - HU-34
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DesbloqueoSolicitud'
+      responses:
+        '200':
+          description: Cliente desbloqueado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Cliente'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: CLIENTE_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CLIENTE_NO_BLOQUEADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/clientes/me/apelaciones:
+    post:
+      tags:
+      - Bloqueos
+      operationId: apelarBloqueo
+      summary: Apelar mi bloqueo
+      description: Una sola apelacion, dentro de los 15 dias siguientes al bloqueo.
+      x-hu:
+      - HU-34
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApelacionSolicitud'
+      responses:
+        '201':
+          description: Apelacion registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Apelacion'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: APELACION_YA_USADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: PLAZO_DE_APELACION_VENCIDO o CLIENTE_NO_BLOQUEADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/apelaciones/{apelacionId}/resolucion:
+    post:
+      tags:
+      - Bloqueos
+      operationId: resolverApelacion
+      summary: Resolver una apelacion
+      description: Un administrador acepta o rechaza; si acepta, el cliente queda desbloqueado.
+      x-hu:
+      - HU-34
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - name: apelacionId
+        in: path
+        required: true
+        schema: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ApelacionResolucion'
+      responses:
+        '200':
+          description: Apelacion resuelta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Apelacion'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: APELACION_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: APELACION_YA_RESUELTA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/usuarios/{usuarioId}/roles:
+    put:
+      tags:
+      - Roles
+      operationId: asignarRoles
+      summary: Asignar roles a un usuario
+      description: Reemplaza los roles del usuario. Un usuario no puede modificar sus propios roles.
+      x-hu:
+      - HU-35
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - name: usuarioId
+        in: path
+        required: true
+        schema: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RolesSolicitud'
+      responses:
+        '200':
+          description: Roles asignados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UsuarioRoles'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: USUARIO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: AUTOASIGNACION_NO_PERMITIDA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/personal-puerta:
+    post:
+      tags:
+      - Roles
+      operationId: asignarPersonalPuerta
+      summary: Asignar personal de puerta a un evento
+      description: El organizador asigna a un usuario con rol STAFF_PUERTA a uno de sus eventos. Identidad confirma
+        con Catalogo que el evento es del organizador.
+      x-hu:
+      - HU-35
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - &id004
+        name: eventoId
+        in: path
+        required: true
+        schema: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PersonalPuertaSolicitud'
+      responses:
+        '201':
+          description: Personal asignado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonalPuerta'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO o USUARIO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: YA_ASIGNADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: USUARIO_SIN_ROL_STAFF_PUERTA
+          content:
+            application/problem+json:
+              schema: *id001
+    get:
+      tags:
+      - Roles
+      operationId: listarPersonalPuerta
+      summary: Listar el personal de puerta de un evento
+      description: Solo el organizador del evento.
+      x-hu:
+      - HU-35
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      - ADMIN
+      parameters:
+      - *id004
+      responses:
+        '200':
+          description: Personal asignado
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/PersonalPuerta'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/personal-puerta/{usuarioId}:
+    delete:
+      tags:
+      - Roles
+      operationId: quitarPersonalPuerta
+      summary: Quitar personal de puerta de un evento
+      description: Sin asignacion, el personal no puede validar entradas de ese evento.
+      x-hu:
+      - HU-35
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id004
+      - name: usuarioId
+        in: path
+        required: true
+        schema: *id003
+      responses:
+        '204':
+          description: Asignacion eliminada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ASIGNACION_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las
+        HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+  parameters:
+    ClienteId:
+      name: clienteId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+  responses:
+    NoAutorizado:
+      description: Token de servicio ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoEncontrado:
+      description: El recurso no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    EstadoCliente:
+      type: object
+      required:
+      - clienteId
+      - estado
+      - correoVerificado
+      - roles
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_VERIFICACION
+          - ACTIVO
+          - BLOQUEADO
+          - ELIMINADO
+        correoVerificado:
+          type: boolean
+        roles:
+          type: array
+          items:
+            type: string
+            enum:
+            - CLIENTE
+            - ORGANIZADOR
+            - STAFF_PUERTA
+            - SOPORTE
+            - ADMIN
+        organizadorId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Presente solo si el usuario tiene rol ORGANIZADOR.
+        bloqueo:
+          type: object
+          nullable: true
+          description: Presente solo si el estado es BLOQUEADO.
+          required:
+          - tipo
+          - motivo
+          properties:
+            tipo:
+              type: string
+              enum:
+              - TEMPORAL
+              - PERMANENTE
+            hasta:
+              type: string
+              format: date-time
+              nullable: true
+              description: Fin del bloqueo temporal (24 horas).
+            motivo:
+              type: string
+    ContactoCliente:
+      type: object
+      required:
+      - clienteId
+      - nombreCompleto
+      - correo
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        nombreCompleto:
+          type: string
+        correo:
+          type: string
+          format: email
+        documento:
+          type: object
+          nullable: true
+          required:
+          - tipo
+          - numero
+          properties:
+            tipo:
+              type: string
+              enum:
+              - DNI
+              - CARNE_EXTRANJERIA
+              - PASAPORTE
+            numero:
+              type: string
+    ResumenCliente:
+      type: object
+      required:
+      - clienteId
+      - estado
+      - correoVerificado
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_VERIFICACION
+          - ACTIVO
+          - BLOQUEADO
+          - ELIMINADO
+        correoVerificado:
+          type: boolean
+    AsignacionPuerta:
+      type: object
+      required:
+      - usuarioId
+      - eventoId
+      - tieneRolStaffPuerta
+      - asignado
+      properties:
+        usuarioId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        tieneRolStaffPuerta:
+          type: boolean
+        asignado:
+          type: boolean
+          description: Verdadero si el organizador asigno al usuario a este evento.
+    Problema:
+      type: object
+      required:
+      - codigo
+      - titulo
+      - estado
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo CLIENTE_NO_ENCONTRADO).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer
+    DocumentoIdentidad:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum:
+          - DNI
+          - CARNE_EXTRANJERIA
+          - PASAPORTE
+        numero: &id005
+          type: string
+      required:
+      - tipo
+      - numero
+    ClienteRegistro:
+      type: object
+      properties:
+        nombreCompleto: *id005
+        correo:
+          type: string
+          format: email
+        contrasena:
+          type: string
+          format: password
+          minLength: 8
+          writeOnly: true
+        fechaNacimiento:
+          type: string
+          format: date
+          description: Debe corresponder a una persona mayor de 18 anios.
+        documento:
+          $ref: '#/components/schemas/DocumentoIdentidad'
+      required:
+      - nombreCompleto
+      - correo
+      - contrasena
+      - fechaNacimiento
+    Cliente:
+      type: object
+      properties:
+        clienteId: *id003
+        nombreCompleto: *id005
+        correo:
+          type: string
+          format: email
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_VERIFICACION
+          - ACTIVO
+          - BLOQUEADO
+          - ELIMINADO
+        correoVerificado:
+          type: boolean
+        documento:
+          $ref: '#/components/schemas/DocumentoIdentidad'
+          nullable: true
+        roles:
+          type: array
+          items:
+            type: string
+            enum:
+            - CLIENTE
+            - ORGANIZADOR
+            - STAFF_PUERTA
+            - SOPORTE
+            - ADMIN
+      required:
+      - clienteId
+      - nombreCompleto
+      - correo
+      - estado
+      - correoVerificado
+      - roles
+    VerificacionCorreoSolicitud:
+      type: object
+      properties:
+        token:
+          type: string
+          description: Token enviado por correo; vence a las 24 horas.
+      required:
+      - token
+    BloqueoClienteSolicitud:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum:
+          - TEMPORAL
+          - PERMANENTE
+        causal:
+          type: string
+          enum:
+          - CONTRACARGOS_PERDIDOS
+          - EXPIRACIONES_REITERADAS
+          - REVENTA_DETECTADA
+          - FRAUDE_CONFIRMADO
+        motivo: *id005
+      required:
+      - tipo
+      - causal
+      - motivo
+    DesbloqueoSolicitud:
+      type: object
+      properties:
+        motivo: *id005
+      required:
+      - motivo
+    ApelacionSolicitud:
+      type: object
+      properties:
+        argumento: *id005
+      required:
+      - argumento
+    Apelacion:
+      type: object
+      properties:
+        apelacionId: *id003
+        clienteId: *id003
+        estado:
+          type: string
+          enum:
+          - PENDIENTE
+          - ACEPTADA
+          - RECHAZADA
+        creadaEn:
+          type: string
+          format: date-time
+        resueltaEn:
+          type: string
+          format: date-time
+          nullable: true
+      required:
+      - apelacionId
+      - clienteId
+      - estado
+      - creadaEn
+    ApelacionResolucion:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum:
+          - ACEPTAR
+          - RECHAZAR
+        motivo: *id005
+      required:
+      - decision
+      - motivo
+    RolesSolicitud:
+      type: object
+      properties:
+        roles:
+          type: array
+          items:
+            type: string
+            enum:
+            - CLIENTE
+            - ORGANIZADOR
+            - STAFF_PUERTA
+            - SOPORTE
+            - ADMIN
+          minItems: 1
+      required:
+      - roles
+    UsuarioRoles:
+      type: object
+      properties:
+        usuarioId: *id003
+        roles:
+          type: array
+          items: *id005
+      required:
+      - usuarioId
+      - roles
+    PersonalPuertaSolicitud:
+      type: object
+      properties:
+        usuarioId: *id003
+      required:
+      - usuarioId
+    PersonalPuerta:
+      type: object
+      properties:
+        usuarioId: *id003
+        eventoId: *id003
+        nombreCompleto: *id005
+      required:
+      - usuarioId
+      - eventoId
+      - nombreCompleto
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.

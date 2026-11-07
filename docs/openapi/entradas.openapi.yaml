@@ -1,0 +1,763 @@
+openapi: 3.0.3
+info:
+  title: Entradas - API (frontend y otros microservicios)
+  version: 1.0.0
+  description: 'Cubre las HU de Entradas que se exponen por HTTP: consulta y correccion de entradas (HU-36), validacion
+    en puerta (HU-37) y transferencia (HU-38). La emision y la anulacion por cancelacion del evento viajan por eventos.
+    Las rutas /api/v1 las consume el frontend por el gateway y las /internal las consume Reservas.'
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+- url: http://entradas:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Entradas de una reserva
+- name: Entradas
+- name: Puerta
+- name: Entradas de un cliente
+paths:
+  /internal/reservas/{reservaId}/estado-entradas:
+    get:
+      tags:
+      - Entradas de una reserva
+      operationId: obtenerEstadoEntradasReserva
+      summary: Consultar el estado de las entradas de una reserva
+      description: |
+        Reservas lo usa para mostrar si la reserva todavia puede cancelarse y calcular el
+        reembolso estimado. Una reserva con alguna entrada USADA o transferida no puede
+        cancelarse por voluntad del cliente. Es solo una consulta; la decision final
+        la toma la anulacion, que es atomica.
+      x-hu:
+      - HU-36
+      - HU-37
+      - HU-38
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Estado de las entradas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EstadoEntradasReserva'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          description: La reserva no tiene entradas emitidas (codigo SIN_ENTRADAS).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://entradas:8080
+  /internal/reservas/{reservaId}/anulacion-entradas:
+    post:
+      tags:
+      - Entradas de una reserva
+      operationId: anularEntradasReserva
+      summary: Anular todas las entradas de una reserva
+      description: |
+        Pasa todas las entradas VALIDAS de la reserva a ANULADA en una sola operacion atomica.
+        Si alguna entrada ya fue USADA o fue transferida, no se anula ninguna y responde 409.
+        Es idempotente: repetirla sobre una reserva ya anulada responde 200 con el mismo
+        resultado. Reservas la llama antes de liberar asientos y de pedir el reembolso.
+      x-hu:
+      - HU-36
+      - HU-37
+      - HU-38
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnulacionEntradasSolicitud'
+      responses:
+        '200':
+          description: Entradas anuladas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnulacionEntradasResultado'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          description: La reserva no tiene entradas emitidas (codigo SIN_ENTRADAS).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '409':
+          description: |
+            ENTRADAS_USADAS (alguna entrada ya ingreso al evento) o ENTRADAS_TRANSFERIDAS
+            (alguna entrada tiene otro titular). No se anula ninguna.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://entradas:8080
+  /api/v1/entradas:
+    get:
+      tags:
+      - Entradas
+      operationId: listarMisEntradas
+      summary: Listar mis entradas
+      description: Las entradas se emiten al confirmarse la reserva (una por asiento o cupo, de forma idempotente)
+        y se consultan aqui.
+      x-hu:
+      - HU-36
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: pagina
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - name: tamanio
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: reservaId
+        in: query
+        required: false
+        schema: &id001
+          type: string
+          format: uuid
+      - name: eventoId
+        in: query
+        required: false
+        schema: *id001
+      - name: estado
+        in: query
+        required: false
+        schema:
+          type: string
+          enum:
+          - VALIDA
+          - USADA
+          - ANULADA
+      responses:
+        '200':
+          description: Entradas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaEntradas'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: &id002
+                $ref: '#/components/schemas/Problema'
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id002
+  /api/v1/entradas/{entradaId}:
+    get:
+      tags:
+      - Entradas
+      operationId: obtenerEntrada
+      summary: Ver una entrada
+      description: Incluye el codigo para mostrar en puerta. Solo el titular actual.
+      x-hu:
+      - HU-36
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: entradaId
+        in: path
+        required: true
+        schema: *id001
+      responses:
+        '200':
+          description: Entrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entrada'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id002
+        '404':
+          description: ENTRADA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id002
+  /api/v1/entradas/{entradaId}/correccion-asistente:
+    post:
+      tags:
+      - Entradas
+      operationId: corregirAsistente
+      summary: Corregir el nombre del asistente de una entrada
+      description: Solo en eventos nominativos, una vez por entrada y hasta 72 horas antes del evento. La entrada
+        anterior se anula y se emite una nueva con codigo distinto.
+      x-hu:
+      - HU-36
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: entradaId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CorreccionAsistenteSolicitud'
+      responses:
+        '200':
+          description: Entrada reemitida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entrada'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id002
+        '404':
+          description: ENTRADA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id002
+        '409':
+          description: CORRECCION_YA_USADA o ENTRADA_NO_VALIDA
+          content:
+            application/problem+json:
+              schema: *id002
+        '422':
+          description: EVENTO_NO_NOMINATIVO, PLAZO_VENCIDO o DOCUMENTO_DUPLICADO
+          content:
+            application/problem+json:
+              schema: *id002
+  /api/v1/eventos/{eventoId}/validaciones:
+    post:
+      tags:
+      - Puerta
+      operationId: validarEntradaEnPuerta
+      summary: Validar una entrada en puerta
+      description: Solo personal asignado al evento y dentro de su ventana (2 horas antes del inicio a 2 horas despues
+        del fin). La entrada debe ser VALIDA, del evento, dentro de la ventana de ingreso (apertura de puertas hasta
+        el fin) y de un punto de acceso habilitado para su zona. El primer escaneo la pasa a USADA; si dos personas
+        escanean a la vez, solo una es aceptada. Si el evento permite reingreso, una entrada USADA puede reingresar
+        hasta el maximo definido.
+      x-hu:
+      - HU-37
+      security:
+      - bearerAuth: []
+      x-roles:
+      - STAFF_PUERTA
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ValidacionSolicitud'
+      responses:
+        '200':
+          description: Ingreso aceptado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidacionResultado'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '403':
+          description: STAFF_NO_ASIGNADO o FUERA_DE_VENTANA_DE_STAFF
+          content:
+            application/problem+json:
+              schema: *id002
+        '404':
+          description: ENTRADA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id002
+        '409':
+          description: ENTRADA_USADA (incluye primerUsoEn) o REINGRESO_AGOTADO
+          content:
+            application/problem+json:
+              schema: *id002
+        '422':
+          description: ENTRADA_ANULADA, EVENTO_DISTINTO, FUERA_DE_VENTANA_DE_INGRESO, ACCESO_NO_HABILITADO, DOCUMENTO_NO_COINCIDE
+            o EDAD_NO_CUMPLIDA (no corresponde reembolso)
+          content:
+            application/problem+json:
+              schema: *id002
+  /api/v1/entradas/{entradaId}/transferencia:
+    post:
+      tags:
+      - Entradas
+      operationId: transferirEntrada
+      summary: Transferir una entrada a otro cliente
+      description: Solo entradas VALIDAS de reservas CONFIRMADAS, hasta 24 horas antes del evento, maximo 2 transferencias.
+        El destinatario debe ser un cliente ACTIVO con correo verificado (Entradas lo consulta a Identidad). La
+        entrada anterior se anula y se emite una nueva con otro codigo. No son transferibles las cortesias ni las
+        de eventos nominativos. La transferencia es gratuita y transferir impide al comprador cancelar la reserva
+        por voluntad propia.
+      x-hu:
+      - HU-38
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: entradaId
+        in: path
+        required: true
+        schema: *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TransferenciaSolicitud'
+      responses:
+        '200':
+          description: Entrada transferida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Entrada'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id002
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id002
+        '404':
+          description: ENTRADA_NO_ENCONTRADA o DESTINATARIO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id002
+        '409':
+          description: ENTRADA_NO_VALIDA o LIMITE_DE_TRANSFERENCIAS
+          content:
+            application/problem+json:
+              schema: *id002
+        '422':
+          description: ENTRADA_NO_TRANSFERIBLE, PLAZO_VENCIDO o DESTINATARIO_NO_ACTIVO
+          content:
+            application/problem+json:
+              schema: *id002
+  /internal/clientes/{clienteId}/entradas-vigentes:
+    get:
+      tags:
+      - Entradas de un cliente
+      operationId: obtenerEntradasVigentesCliente
+      summary: Saber si un cliente tiene entradas validas de eventos futuros
+      description: |
+        Identidad lo usa al eliminar una cuenta: no puede eliminarse si el cliente tiene entradas VALIDAS de
+        eventos futuros (HU-32). Es solo una consulta; Identidad decide. Las reservas pendientes las informa
+        Reservas.
+      x-hu:
+      - HU-32
+      x-llamado-por:
+      - identidad
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://entradas:8080
+      parameters:
+      - name: clienteId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Entradas vigentes del cliente
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntradasVigentesCliente'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+  /internal/reservas/{reservaId}/registro-acceso:
+    get:
+      tags:
+      - Entradas de una reserva
+      operationId: obtenerRegistroAccesoReserva
+      summary: Obtener el registro de acceso de las entradas de una reserva
+      description: |
+        Pagos lo usa como evidencia al impugnar un contracargo cuando el evento ya ocurrio y las entradas fueron
+        USADAS (HU-24). Lista los ingresos aceptados con fecha, hora, punto de acceso y personal de puerta. Si
+        ninguna entrada fue usada devuelve la lista vacia.
+      x-hu:
+      - HU-24
+      x-llamado-por:
+      - pagos
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://entradas:8080
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Registro de acceso
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RegistroAccesoReserva'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          description: La reserva no tiene entradas emitidas (codigo SIN_ENTRADAS).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las
+        HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+  parameters:
+    ReservaId:
+      name: reservaId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+  responses:
+    NoAutorizado:
+      description: Token de servicio ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    EstadoEntradasReserva:
+      type: object
+      required:
+      - reservaId
+      - total
+      - validas
+      - usadas
+      - anuladas
+      - transferidas
+      - tieneEntradasUsadas
+      - tieneEntradasTransferidas
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+        total:
+          type: integer
+          minimum: 1
+        validas:
+          type: integer
+          minimum: 0
+        usadas:
+          type: integer
+          minimum: 0
+        anuladas:
+          type: integer
+          minimum: 0
+        transferidas:
+          type: integer
+          minimum: 0
+          description: Entradas cuyo titular ya no es el comprador.
+        tieneEntradasUsadas:
+          type: boolean
+        tieneEntradasTransferidas:
+          type: boolean
+    AnulacionEntradasSolicitud:
+      type: object
+      required:
+      - motivo
+      properties:
+        motivo:
+          type: string
+          enum:
+          - CANCELACION_CLIENTE
+          - REEMBOLSO_REPROGRAMACION
+    AnulacionEntradasResultado:
+      type: object
+      required:
+      - reservaId
+      - entradasAnuladas
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+        entradasAnuladas:
+          type: integer
+          minimum: 1
+        anuladasEn:
+          type: string
+          format: date-time
+    Problema:
+      type: object
+      required:
+      - codigo
+      - titulo
+      - estado
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo ENTRADAS_USADAS).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer
+        primerUsoEn:
+          type: string
+          format: date-time
+          description: 'Presente en ENTRADA_USADA: fecha y hora del primer ingreso.'
+    Entrada:
+      type: object
+      properties:
+        entradaId: *id001
+        codigo:
+          type: string
+          description: Codigo unico no predecible que se muestra como QR.
+        reservaId: *id001
+        eventoId: *id001
+        zonaId: *id001
+        asientoId:
+          type: string
+          format: uuid
+          nullable: true
+        estado:
+          type: string
+          enum:
+          - VALIDA
+          - USADA
+          - ANULADA
+        titularId: *id001
+        asistente:
+          type: object
+          properties:
+            nombreCompleto: &id003
+              type: string
+            numeroDocumento: *id003
+          nullable: true
+        transferencias: &id004
+          type: integer
+        vigenteHasta: &id005
+          type: string
+          format: date-time
+      required:
+      - entradaId
+      - codigo
+      - reservaId
+      - eventoId
+      - zonaId
+      - estado
+      - vigenteHasta
+    PaginaEntradas:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Entrada'
+        pagina: *id004
+        tamanio: *id004
+        total: *id004
+      required:
+      - items
+      - pagina
+      - tamanio
+      - total
+    CorreccionAsistenteSolicitud:
+      type: object
+      properties:
+        nombreCompleto: *id003
+        tipoDocumento:
+          type: string
+          enum:
+          - DNI
+          - CARNE_EXTRANJERIA
+          - PASAPORTE
+        numeroDocumento: *id003
+      required:
+      - nombreCompleto
+      - numeroDocumento
+    ValidacionSolicitud:
+      type: object
+      properties:
+        codigo: *id003
+        puntoAccesoId: *id001
+        numeroDocumento:
+          type: string
+          description: Obligatorio en eventos nominativos y +18.
+        mayorDeEdadVerificado:
+          type: boolean
+          description: 'Obligatorio en eventos +18: el personal confirma la edad con el documento.'
+      required:
+      - codigo
+      - puntoAccesoId
+    ValidacionResultado:
+      type: object
+      properties:
+        resultado:
+          type: string
+          enum:
+          - ACEPTADA
+        entradaId: *id001
+        zonaId: *id001
+        asientoId:
+          type: string
+          format: uuid
+          nullable: true
+        validadaEn: *id005
+        esReingreso:
+          type: boolean
+        reingresosRestantes:
+          type: integer
+          nullable: true
+      required:
+      - resultado
+      - entradaId
+      - validadaEn
+    TransferenciaSolicitud:
+      type: object
+      properties:
+        correoDestinatario:
+          type: string
+          format: email
+      required:
+      - correoDestinatario
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.
+    EntradasVigentesCliente:
+      type: object
+      required: [clienteId, entradasValidasEventosFuturos, tieneEntradasVigentes]
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        entradasValidasEventosFuturos:
+          type: integer
+          minimum: 0
+        tieneEntradasVigentes:
+          type: boolean
+    RegistroAccesoReserva:
+      type: object
+      required: [reservaId, eventoId, entradasUsadas, accesos]
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        entradasUsadas:
+          type: integer
+          minimum: 0
+        accesos:
+          type: array
+          items:
+            type: object
+            required: [entradaId, validadaEn, puntoAccesoId, personalId, esReingreso]
+            properties:
+              entradaId:
+                type: string
+                format: uuid
+              validadaEn:
+                type: string
+                format: date-time
+              puntoAccesoId:
+                type: string
+                format: uuid
+              personalId:
+                type: string
+                format: uuid
+              esReingreso:
+                type: boolean

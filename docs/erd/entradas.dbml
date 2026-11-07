@@ -1,0 +1,99 @@
+Project entradas {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio ENTRADAS. HU-36, HU-37, HU-38 y OpenAPI entradas.
+  Referencias a otros servicios: logicas (sin FK).
+  '''
+}
+
+Enum estado_entrada {
+  VALIDA
+  USADA
+  ANULADA
+}
+
+Enum motivo_anulacion_entrada {
+  CANCELACION_CLIENTE
+  REEMBOLSO_REPROGRAMACION
+  EVENTO_CANCELADO
+  TRANSFERENCIA
+  CORRECCION_NOMINATIVA
+  CONTRACARGO
+}
+
+Enum tipo_acceso {
+  INGRESO
+  REINGRESO
+}
+
+Table entradas {
+  id uuid [pk]
+  codigo varchar(64) [not null, unique, note: 'Codigo unico no predecible (se escanea en puerta)']
+  reserva_id uuid [not null, note: 'Ref logica reservas.reservas']
+  evento_id uuid [not null, note: 'Ref logica catalogo.eventos']
+  zona_id uuid [not null, note: 'Ref logica catalogo.zonas_sede']
+  asiento_id uuid [note: 'Solo zonas NUMERADAS']
+  posicion integer [not null, note: 'Posicion de la entrada dentro de la reserva (1..n)']
+  version integer [not null, default: 1, note: 'Sube al reemplazar la entrada (transferencia o correccion nominativa)']
+  estado estado_entrada [not null, default: 'VALIDA']
+  es_cortesia boolean [not null, default: false, note: 'No reembolsable ni transferible']
+  comprador_id uuid [not null, note: 'Cliente que compro la reserva']
+  titular_id uuid [not null, note: 'Titular actual. Distinto del comprador = entrada transferida']
+  titular_nombre varchar(200) [note: 'Eventos nominativos y cortesias']
+  titular_documento_tipo varchar(20)
+  titular_documento_numero varchar(20)
+  transferencias_previas smallint [not null, default: 0, note: 'Maximo 2 transferencias por entrada']
+  correccion_nominativa_aplicada boolean [not null, default: false, note: 'Solo una correccion por entrada, hasta 72 h antes del evento']
+  entrada_anterior_id uuid [ref: > entradas.id, note: 'Entrada anulada a la que reemplaza']
+  suspendida boolean [not null, default: false, note: 'Suspension por discrepancia de conciliacion (HU-25)']
+  vigente_hasta timestamptz [not null, note: 'Fecha de fin del evento (se actualiza si se reprograma)']
+  motivo_anulacion motivo_anulacion_entrada
+  emitida_en timestamptz [not null, default: `now()`]
+  anulada_en timestamptz
+
+  indexes {
+    (reserva_id, posicion, version) [unique, name: 'ux_entradas_emision_idempotente', note: 'Emision idempotente: una confirmacion repetida no duplica entradas']
+    (reserva_id, estado)
+    (evento_id, estado)
+    titular_id
+  }
+
+  checks {
+    `transferencias_previas between 0 and 2` [name: 'ck_entradas_transferencias']
+  }
+
+  Note: 'Reservas EXPIRADA o CANCELADA nunca tienen entradas VALIDAS. Respalda EstadoEntradasReserva (validas, usadas, anuladas, transferidas = titular_id distinto de comprador_id).'
+}
+
+Table accesos_entrada {
+  id uuid [pk]
+  entrada_id uuid [not null, ref: > entradas.id]
+  secuencia smallint [not null, note: '0 = primer ingreso; 1..n = reingresos']
+  tipo tipo_acceso [not null]
+  registrado_en timestamptz [not null, default: `now()`]
+  punto_acceso_id uuid [not null, note: 'Ref logica catalogo.puntos_acceso_sede']
+  personal_id uuid [not null, note: 'STAFF_PUERTA que valido (ref logica identidad.usuarios)']
+  documento_verificado boolean [not null, default: false, note: 'Eventos nominativos y +18']
+
+  indexes {
+    (entrada_id, secuencia) [unique, name: 'ux_acceso_una_validacion', note: 'Si dos personas escanean a la vez, solo una validacion es aceptada']
+  }
+
+  Note: 'Primer escaneo exitoso: USADA con fecha, hora, punto de acceso y personal (el segundo escaneo informa este registro). Reingresos hasta permiteReingreso/maxReingresos del evento. Sirve de evidencia ante contracargos.'
+}
+
+Table transferencias_entrada {
+  id uuid [pk]
+  entrada_origen_id uuid [not null, ref: > entradas.id, note: 'Pasa a ANULADA']
+  entrada_nueva_id uuid [not null, unique, ref: - entradas.id, note: 'Nueva entrada con codigo distinto']
+  remitente_id uuid [not null]
+  destinatario_id uuid [not null, note: 'Cliente registrado, ACTIVO y con correo verificado']
+  transferida_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    entrada_origen_id
+    destinatario_id
+  }
+
+  Note: 'Gratuita; hasta 24 h antes del evento. Impide al comprador cancelar la reserva por voluntad propia.'
+}

@@ -1,0 +1,1727 @@
+openapi: 3.0.3
+info:
+  title: Pagos - API (frontend, pasarela y otros microservicios)
+  version: 1.0.0
+  description: |
+    Cubre las HU de Pagos que se exponen por HTTP: pago de una reserva (HU-19), notificaciones de la
+    pasarela (HU-20), pagos en revision (HU-21), reembolsos (HU-22), comprobantes (HU-23), contracargos
+    (HU-24), conciliacion (HU-25), liquidacion al organizador (HU-31) y reporte de ventas por evento (HU-42).
+
+    No tienen endpoint propio: el reembolso automatico (cancelacion de reserva, cancelacion de evento,
+    reprogramacion, pago duplicado, asiento no disponible), la emision del comprobante y de la nota de credito,
+    la conciliacion diaria y la generacion de la liquidacion. Esos procesos los disparan eventos o tareas
+    programadas; las rutas de este archivo solo cubren lo que una persona o la pasarela hace por HTTP.
+
+    Las rutas /api/v1 las consume el frontend por el gateway (y la pasarela, solo el webhook). Las rutas
+    /internal las consume Catalogo.
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend y la pasarela)
+- url: http://pagos:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Pagos
+- name: Pasarela
+- name: Revision
+- name: Reembolsos
+- name: Comprobantes
+- name: Contracargos
+- name: Conciliacion
+- name: Liquidaciones
+- name: Reportes
+- name: Organizadores
+paths:
+  /api/v1/reservas/{reservaId}/pagos:
+    post:
+      tags: [Pagos]
+      operationId: iniciarPago
+      summary: Iniciar el pago de una reserva
+      description: |
+        Solo se paga una reserva PENDIENTE_PAGO con bloqueo vigente, en un solo cobro en soles por el total
+        congelado al crear la reserva (no hay pagos parciales). Solo puede haber un intento en proceso por
+        reserva. El cliente elige aqui si quiere boleta o factura; la factura exige RUC de 11 digitos y razon
+        social, y la boleta exige que el cliente tenga documento de identidad registrado. Pagos nunca recibe
+        datos de la tarjeta: recibe el token que genera la pasarela. Una reserva admite como maximo 3 intentos
+        fallidos; al tercero Reservas la cancela y libera los asientos.
+      x-hu: [HU-19]
+      security:
+      - bearerAuth: []
+      x-roles: [CLIENTE]
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IniciarPagoSolicitud'
+      responses:
+        '201':
+          description: Pago iniciado (estado INICIADO)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pago'
+        '200':
+          description: La misma Idempotency-Key ya inicio este pago; se devuelve el existente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pago'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          description: RESERVA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '409':
+          description: PAGO_EN_PROCESO, PAGO_EN_REVISION, RESERVA_NO_PAGABLE (no esta PENDIENTE_PAGO) o BLOQUEO_NO_VIGENTE.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: MEDIO_PAGO_NO_ADMITIDO, RUC_INVALIDO, RAZON_SOCIAL_REQUERIDA o DOCUMENTO_REQUERIDO_PARA_BOLETA.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/pagos/{pagoId}:
+    get:
+      tags: [Pagos]
+      operationId: obtenerPago
+      summary: Consultar un pago
+      description: |
+        El cliente ve solo sus pagos (uno ajeno se trata como inexistente); soporte y administrador ven cualquiera.
+        El medio de pago se muestra enmascarado (ultimos 4 digitos). Incluye el estado, los reembolsos aplicados y,
+        si esta EN_REVISION, el plazo para resolverlo.
+      x-hu: [HU-19, HU-21, HU-22]
+      security:
+      - bearerAuth: []
+      x-roles: [CLIENTE, SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/PagoId'
+      responses:
+        '200':
+          description: Pago
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pago'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+  /api/v1/pasarela/notificaciones:
+    post:
+      tags: [Pasarela]
+      operationId: recibirNotificacionPasarela
+      summary: Recibir una notificacion de la pasarela de pago (webhook)
+      description: |
+        La pasarela notifica pagos aprobados o rechazados, resultados de reembolsos y contracargos. La firma del
+        mensaje se valida antes de procesarlo; una firma invalida se rechaza con 401 y no se registra como pago.
+        El proceso es idempotente: la misma referencia repetida registra un solo pago y devuelve el mismo
+        resultado. Un estado final (APROBADO o RECHAZADO) nunca vuelve a INICIADO aunque lleguen mensajes fuera
+        de orden. Si el monto notificado difiere del de la reserva, el pago pasa a EN_REVISION y la reserva no
+        se confirma. Una notificacion para una reserva inexistente se registra como huerfana y se reembolsa.
+        Un contracargo recibido sobre un pago APROBADO lo cambia a CONTRACARGO.
+      x-hu: [HU-20, HU-22, HU-24]
+      security:
+      - firmaPasarela: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NotificacionPasarela'
+      responses:
+        '200':
+          description: Notificacion procesada (o ya procesada antes)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificacionResultado'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          description: FIRMA_INVALIDA
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/pagos/en-revision:
+    get:
+      tags: [Revision]
+      operationId: listarPagosEnRevision
+      summary: Listar pagos en revision
+      description: |
+        Pagos EN_REVISION ordenados por el plazo mas cercano. Todo pago en revision debe resolverse dentro de las
+        24 horas siguientes a su registro.
+      x-hu: [HU-21]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/Pagina'
+      - $ref: '#/components/parameters/Tamanio'
+      responses:
+        '200':
+          description: Pagos en revision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaPagosEnRevision'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+  /api/v1/pagos/{pagoId}/resolucion:
+    post:
+      tags: [Revision]
+      operationId: resolverPagoEnRevision
+      summary: Resolver un pago en revision
+      description: |
+        CONFIRMAR: si el monto cobrado es igual al total de la reserva y se valida el pago en la pasarela, el pago
+        pasa a APROBADO y la reserva se confirma; si el monto es mayor, se confirma y se reembolsa la diferencia;
+        si los asientos ya no estan disponibles, no se confirma y se reembolsa el 100%.
+        RECHAZAR (o monto menor al total): se rechaza el pago, se reembolsa lo cobrado y la reserva sigue las
+        reglas de pago rechazado. Todo requiere motivo y queda en la auditoria con el responsable. Quien resuelve
+        no puede ser el usuario vinculado a la reserva. Si no se resuelve en 24 horas el sistema reembolsa el
+        100% y la reserva pasa a EXPIRADA.
+      x-hu: [HU-21]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/PagoId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolucionPagoSolicitud'
+      responses:
+        '200':
+          description: Pago resuelto
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Pago'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          description: RESOLUTOR_NO_PERMITIDO (es el usuario vinculado a la reserva) o el rol no permite esta operacion.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: PAGO_NO_EN_REVISION o PAGO_YA_RESUELTO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: MOTIVO_REQUERIDO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/pagos/{pagoId}/reembolsos:
+    post:
+      tags: [Reembolsos]
+      operationId: solicitarReembolsoAjuste
+      summary: Solicitar un reembolso por ajuste administrativo
+      description: |
+        Reembolso manual con motivo AJUSTE_ADMIN. Solo se reembolsa un pago APROBADO o REEMBOLSADO_PARCIAL y el
+        acumulado nunca supera lo efectivamente pagado; un pago con contracargo no se reembolsa ademas de lo
+        disputado. Nace SOLICITADO y exige aprobacion segun el monto: hasta S/ 200 lo aprueba soporte, mas de
+        S/ 200 un administrador y mas de S/ 500 un segundo administrador. El cargo por servicio no se devuelve en
+        este motivo. Los demas motivos (cancelacion, evento cancelado, reprogramacion, pago duplicado, asiento no
+        disponible) se generan automaticamente por eventos.
+      x-hu: [HU-22]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/PagoId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReembolsoAjusteSolicitud'
+      responses:
+        '201':
+          description: Reembolso solicitado, pendiente de aprobacion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reembolso'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: PAGO_NO_REEMBOLSABLE (estado invalido), PAGO_CON_CONTRACARGO o REEMBOLSO_PENDIENTE_EXISTENTE.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: MONTO_EXCEDE_LO_PAGADO o MOTIVO_REQUERIDO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/reembolsos/{reembolsoId}/aprobaciones:
+    post:
+      tags: [Reembolsos]
+      operationId: aprobarReembolso
+      summary: Aprobar un reembolso por ajuste administrativo
+      description: |
+        Aprobacion segun el monto: soporte hasta S/ 200, administrador por encima, y un segundo administrador
+        distinto para mas de S/ 500. Un usuario no puede aprobar una solicitud que el mismo creo. Cuando se reunen
+        las aprobaciones requeridas el reembolso pasa a EN_PROCESO; si la pasarela falla se reintenta hasta 3 veces
+        en 72 horas y despues pasa a revision manual.
+      x-hu: [HU-22, HU-35]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/ReembolsoId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AprobacionReembolsoSolicitud'
+      responses:
+        '200':
+          description: Aprobacion registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Reembolso'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          description: APROBACION_PROPIA, APROBADOR_NO_AUTORIZADO_PARA_EL_MONTO o el rol no permite esta operacion.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: REEMBOLSO_NO_PENDIENTE_DE_APROBACION o APROBADOR_REPETIDO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/reservas/{reservaId}/comprobante:
+    get:
+      tags: [Comprobantes]
+      operationId: obtenerComprobanteReserva
+      summary: Consultar el comprobante de pago de una reserva
+      description: |
+        Devuelve la boleta o factura emitida al confirmarse el pago, con su desglose (valor de entradas, cargo por
+        servicio, descuentos e IGV) y las notas de credito generadas por reembolsos. El comprobante no se edita ni
+        se elimina y no puede cambiarse de boleta a factura. Las cortesias no tienen comprobante. El cliente ve solo
+        los suyos.
+      x-hu: [HU-23]
+      security:
+      - bearerAuth: []
+      x-roles: [CLIENTE, SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/ReservaId'
+      responses:
+        '200':
+          description: Comprobante
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comprobante'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          description: COMPROBANTE_NO_EMITIDO (la reserva no esta confirmada o es cortesia) o reserva inexistente.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/contracargos:
+    get:
+      tags: [Contracargos]
+      operationId: listarContracargos
+      summary: Listar contracargos
+      description: |
+        Lista los contracargos con su plazo de evidencia (7 dias desde la notificacion) para que soporte o un
+        administrador decida cuales impugnar.
+      x-hu: [HU-24]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - name: estado
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/EstadoContracargo'
+      - $ref: '#/components/parameters/Pagina'
+      - $ref: '#/components/parameters/Tamanio'
+      responses:
+        '200':
+          description: Contracargos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaContracargos'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+  /api/v1/contracargos/{contracargoId}/impugnacion:
+    post:
+      tags: [Contracargos]
+      operationId: impugnarContracargo
+      summary: Impugnar un contracargo con el registro de acceso
+      description: |
+        Aplica cuando el evento ya ocurrio y las entradas fueron USADAS: Pagos reune el registro de acceso
+        (Entradas) y lo presenta a la pasarela como evidencia, dentro de los 7 dias siguientes a la notificacion.
+        El contracargo pasa a EN_DISPUTA. Un contracargo perdido se descuenta de las liquidaciones del organizador;
+        uno ganado restituye el monto y deja el pago APROBADO.
+      x-hu: [HU-24]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/ContracargoId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ImpugnacionSolicitud'
+      responses:
+        '202':
+          description: Evidencia enviada a la pasarela
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Contracargo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: CONTRACARGO_NO_IMPUGNABLE (ya esta EN_DISPUTA, GANADO o PERDIDO).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: SIN_EVIDENCIA (ninguna entrada fue USADA) o PLAZO_DE_EVIDENCIA_VENCIDO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/conciliaciones/discrepancias:
+    get:
+      tags: [Conciliacion]
+      operationId: listarDiscrepancias
+      summary: Listar discrepancias de la conciliacion diaria
+      description: |
+        Cada dia se compara el total de pagos aprobados contra el reporte de la pasarela. Las discrepancias quedan
+        ABIERTAS hasta que un responsable las resuelve. Una abierta por mas de 3 dias se escala a un administrador
+        y solo este la ve y la resuelve.
+      x-hu: [HU-25]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - name: estado
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/EstadoDiscrepancia'
+      - name: desde
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - name: hasta
+        in: query
+        required: false
+        schema:
+          type: string
+          format: date
+      - $ref: '#/components/parameters/Pagina'
+      - $ref: '#/components/parameters/Tamanio'
+      responses:
+        '200':
+          description: Discrepancias
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaDiscrepancias'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+  /api/v1/conciliaciones/discrepancias/{discrepanciaId}/resolucion:
+    post:
+      tags: [Conciliacion]
+      operationId: resolverDiscrepancia
+      summary: Resolver una discrepancia con motivo
+      description: |
+        Un pago en pasarela sin registro se reembolsa salvo que pueda asociarse a una reserva confirmable. Un
+        registro aprobado sin pago en pasarela suspende las entradas de esa reserva y la pasa a revision hasta que
+        se resuelva. Toda resolucion exige motivo y queda en la auditoria.
+      x-hu: [HU-25]
+      security:
+      - bearerAuth: []
+      x-roles: [SOPORTE, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/DiscrepanciaId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ResolucionDiscrepanciaSolicitud'
+      responses:
+        '200':
+          description: Discrepancia resuelta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DiscrepanciaConciliacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          description: DISCREPANCIA_ESCALADA (solo un administrador) o el rol no permite esta operacion.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: DISCREPANCIA_YA_RESUELTA o ACCION_NO_APLICABLE_AL_TIPO.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: MOTIVO_REQUERIDO o RESERVA_REQUERIDA (la accion ASOCIAR_A_RESERVA necesita reservaId).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/pagos/{pagoId}/ajustes:
+    post:
+      tags: [Conciliacion]
+      operationId: registrarAjustePago
+      summary: Registrar un ajuste sobre un pago ya conciliado
+      description: |
+        Los pagos ya conciliados nunca se editan: solo se corrigen con ajustes registrados, con motivo y
+        responsable, que quedan en la auditoria.
+      x-hu: [HU-25]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/PagoId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AjusteSolicitud'
+      responses:
+        '201':
+          description: Ajuste registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Ajuste'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: PAGO_NO_CONCILIADO (aun se puede corregir por el flujo normal).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/liquidaciones:
+    get:
+      tags: [Liquidaciones]
+      operationId: listarLiquidaciones
+      summary: Listar liquidaciones
+      description: |
+        La liquidacion se genera automaticamente por evento 3 dias habiles despues de que el evento finaliza. El
+        organizador ve solo las suyas; el administrador ve todas y puede filtrar.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ORGANIZADOR, ADMIN]
+      parameters:
+      - name: organizadorId
+        in: query
+        required: false
+        description: Solo para administrador.
+        schema:
+          type: string
+          format: uuid
+      - name: eventoId
+        in: query
+        required: false
+        schema:
+          type: string
+          format: uuid
+      - name: estado
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/EstadoLiquidacion'
+      - $ref: '#/components/parameters/Pagina'
+      - $ref: '#/components/parameters/Tamanio'
+      responses:
+        '200':
+          description: Liquidaciones
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaLiquidaciones'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+  /api/v1/liquidaciones/{liquidacionId}:
+    get:
+      tags: [Liquidaciones]
+      operationId: obtenerLiquidacion
+      summary: Consultar una liquidacion con su desglose
+      description: |
+        Desglose: ventas netas, comision, reembolsos y contracargos a cargo del organizador, penalizaciones, deudas
+        compensadas y monto retenido (pagos EN_REVISION, contracargos abiertos y discrepancias ABIERTAS del evento,
+        que se liquidan en cuanto se resuelven). Si el resultado es negativo se registra como deuda y se compensa
+        en liquidaciones futuras. El organizador solo ve las suyas.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ORGANIZADOR, ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/LiquidacionId'
+      responses:
+        '200':
+          description: Liquidacion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liquidacion'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+  /api/v1/liquidaciones/{liquidacionId}/aprobacion:
+    post:
+      tags: [Liquidaciones]
+      operationId: aprobarLiquidacion
+      summary: Aprobar una liquidacion
+      description: GENERADA pasa a APROBADA. Una liquidacion OBSERVADA o PAGADA no se aprueba.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/LiquidacionId'
+      responses:
+        '200':
+          description: Liquidacion aprobada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liquidacion'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: LIQUIDACION_NO_APROBABLE (no esta GENERADA).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/liquidaciones/{liquidacionId}/observacion:
+    post:
+      tags: [Liquidaciones]
+      operationId: observarLiquidacion
+      summary: Observar una liquidacion
+      description: Pasa a OBSERVADA con un motivo. Una liquidacion OBSERVADA no se paga hasta resolver la observacion.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/LiquidacionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MotivoSolicitud'
+      responses:
+        '200':
+          description: Liquidacion observada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liquidacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: LIQUIDACION_NO_OBSERVABLE (ya esta PAGADA, que es inmutable).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/liquidaciones/{liquidacionId}/observacion/resolucion:
+    post:
+      tags: [Liquidaciones]
+      operationId: resolverObservacionLiquidacion
+      summary: Resolver la observacion de una liquidacion
+      description: OBSERVADA vuelve a GENERADA para volver a aprobarse. Exige motivo.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/LiquidacionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MotivoSolicitud'
+      responses:
+        '200':
+          description: Observacion resuelta
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liquidacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: LIQUIDACION_NO_OBSERVADA.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/liquidaciones/{liquidacionId}/pago:
+    post:
+      tags: [Liquidaciones]
+      operationId: registrarPagoLiquidacion
+      summary: Registrar el pago de una liquidacion al organizador
+      description: |
+        APROBADA pasa a PAGADA y se paga unicamente a la cuenta bancaria verificada del organizador. Una
+        liquidacion PAGADA es inmutable: cualquier ajuste posterior se aplica en la siguiente liquidacion. Un
+        evento tiene una sola liquidacion final.
+      x-hu: [HU-31]
+      security:
+      - bearerAuth: []
+      x-roles: [ADMIN]
+      parameters:
+      - $ref: '#/components/parameters/LiquidacionId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagoLiquidacionSolicitud'
+      responses:
+        '200':
+          description: Liquidacion pagada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Liquidacion'
+        '400':
+          $ref: '#/components/responses/SolicitudInvalida'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: |
+            LIQUIDACION_NO_APROBADA, LIQUIDACION_OBSERVADA, CUENTA_NO_VERIFICADA o CUENTA_RETENIDA
+            (cambio de cuenta bancaria con retencion de 72 horas).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+  /api/v1/eventos/{eventoId}/reporte-ventas:
+    get:
+      tags: [Reportes]
+      operationId: obtenerReporteVentasEvento
+      summary: Reporte de ventas de un evento
+      description: |
+        Ventas brutas, descuentos, cargo por servicio, IGV, comision y neto de las reservas CONFIRMADAS y
+        FINALIZADAS, con los reembolsos por separado (se restan del neto) y el desglose por zona, fase de venta y
+        cupon. Las cortesias no cuentan. Las cifras salen de las mismas fuentes que los comprobantes y la
+        liquidacion para que coincidan. El organizador solo accede a los reportes de sus propios eventos. Todas
+        las fechas se muestran en la zona horaria de Lima.
+      x-hu: [HU-42]
+      security:
+      - bearerAuth: []
+      x-roles: [ORGANIZADOR, ADMIN]
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Reporte de ventas
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReporteVentas'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          $ref: '#/components/responses/Prohibido'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+  /internal/organizadores/{organizadorId}/situacion-financiera:
+    get:
+      tags: [Organizadores]
+      operationId: obtenerSituacionFinancieraOrganizador
+      summary: Obtener las deudas y los saldos pendientes de un organizador
+      description: |
+        Catalogo lo usa para dos reglas: un organizador con deudas vencidas no puede crear eventos nuevos (HU-02) y
+        la baja de un organizador solo procede si no tiene saldos pendientes ni deudas (HU-29). Pagos es el dueno de
+        las liquidaciones y las deudas; Catalogo decide.
+      x-hu: [HU-02, HU-29]
+      x-llamado-por: [catalogo]
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://pagos:8080
+      parameters:
+      - name: organizadorId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Situacion financiera
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SituacionFinancieraOrganizador'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+    firmaPasarela:
+      type: apiKey
+      in: header
+      name: X-Firma-Pasarela
+      description: Firma del mensaje generada por la pasarela con el secreto compartido; Pagos la valida antes de procesar.
+  parameters:
+    ReservaId:
+      name: reservaId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    PagoId:
+      name: pagoId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ReembolsoId:
+      name: reembolsoId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    ContracargoId:
+      name: contracargoId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    DiscrepanciaId:
+      name: discrepanciaId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    LiquidacionId:
+      name: liquidacionId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Evita cobrar dos veces si el cliente reintenta la misma solicitud de pago.
+      schema:
+        type: string
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+    Pagina:
+      name: pagina
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    Tamanio:
+      name: tamanio
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+  responses:
+    SolicitudInvalida:
+      description: Solicitud con campos faltantes o con formato invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoAutorizado:
+      description: Token ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    Prohibido:
+      description: El rol no permite esta operacion (o el recurso es de otro usuario)
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoEncontrado:
+      description: El recurso no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.
+    MontoConSigno:
+      type: number
+      format: double
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales; puede ser negativo (ajustes y netos).
+    Problema:
+      type: object
+      required: [codigo, titulo, estado]
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo PAGO_EN_PROCESO).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer
+    EstadoPago:
+      type: string
+      enum: [INICIADO, APROBADO, RECHAZADO, EN_REVISION, REEMBOLSADO_PARCIAL, REEMBOLSADO_TOTAL, CONTRACARGO]
+    MedioPago:
+      type: string
+      enum: [TARJETA, BILLETERA_DIGITAL]
+    MotivoReembolso:
+      type: string
+      enum: [CANCELACION_CLIENTE, EVENTO_CANCELADO, EVENTO_REPROGRAMADO, PAGO_DUPLICADO, ASIENTO_NO_DISPONIBLE, AJUSTE_ADMIN]
+    EstadoReembolso:
+      type: string
+      enum: [SOLICITADO, EN_PROCESO, COMPLETADO, FALLIDO]
+    EstadoContracargo:
+      type: string
+      enum: [RECIBIDO, EN_DISPUTA, GANADO, PERDIDO]
+    EstadoDiscrepancia:
+      type: string
+      enum: [ABIERTA, RESUELTA, ESCALADA]
+    TipoDiscrepancia:
+      type: string
+      enum: [PASARELA_SIN_REGISTRO, REGISTRO_SIN_PASARELA, MONTO_DISTINTO]
+    EstadoLiquidacion:
+      type: string
+      enum: [GENERADA, APROBADA, PAGADA, OBSERVADA]
+    DatosComprobante:
+      type: object
+      description: |
+        Eleccion del cliente antes de pagar. La factura exige ruc (11 digitos) y razonSocial; la boleta usa el
+        documento de identidad del cliente registrado en Identidad.
+      required: [tipo]
+      properties:
+        tipo:
+          type: string
+          enum: [BOLETA, FACTURA]
+        ruc:
+          type: string
+          pattern: '^[0-9]{11}$'
+        razonSocial:
+          type: string
+          maxLength: 200
+    IniciarPagoSolicitud:
+      type: object
+      required: [medioPago, tokenMedioPago, comprobante]
+      properties:
+        medioPago:
+          $ref: '#/components/schemas/MedioPago'
+        tokenMedioPago:
+          type: string
+          description: Token generado por la pasarela. Pagos nunca recibe ni guarda datos de la tarjeta.
+        comprobante:
+          $ref: '#/components/schemas/DatosComprobante'
+    Pago:
+      type: object
+      required: [pagoId, reservaId, estado, medioPago, monto, moneda, numeroIntento, montoReembolsado, creadoEn]
+      properties:
+        pagoId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+          nullable: true
+          description: Nulo si el pago es huerfano (la reserva no existe).
+        estado:
+          $ref: '#/components/schemas/EstadoPago'
+        medioPago:
+          $ref: '#/components/schemas/MedioPago'
+        ultimos4:
+          type: string
+          pattern: '^[0-9]{4}$'
+          nullable: true
+          description: Unico dato del medio de pago que se muestra.
+        moneda:
+          type: string
+          enum: [PEN]
+        monto:
+          $ref: '#/components/schemas/Monto'
+        montoReembolsado:
+          $ref: '#/components/schemas/Monto'
+        numeroIntento:
+          type: integer
+          minimum: 1
+          maximum: 3
+        urlPago:
+          type: string
+          format: uri
+          nullable: true
+          description: Direccion de la pasarela para completar el cobro, mientras el pago esta INICIADO.
+        enRevisionDesde:
+          type: string
+          format: date-time
+          nullable: true
+        resolverAntesDe:
+          type: string
+          format: date-time
+          nullable: true
+          description: 24 horas desde que el pago entro en revision.
+        reembolsos:
+          type: array
+          items:
+            $ref: '#/components/schemas/Reembolso'
+        creadoEn:
+          type: string
+          format: date-time
+        actualizadoEn:
+          type: string
+          format: date-time
+    NotificacionPasarela:
+      type: object
+      required: [referencia, tipoEvento, ocurridoEn]
+      properties:
+        referencia:
+          type: string
+          description: Referencia del pago, reembolso o contracargo en la pasarela. Es la llave de idempotencia.
+        tipoEvento:
+          type: string
+          enum: [PAGO_APROBADO, PAGO_RECHAZADO, REEMBOLSO_COMPLETADO, REEMBOLSO_FALLIDO, CONTRACARGO_RECIBIDO, CONTRACARGO_GANADO, CONTRACARGO_PERDIDO]
+        referenciaPago:
+          type: string
+          description: Referencia del pago original (en reembolsos y contracargos).
+        reservaId:
+          type: string
+          format: uuid
+          nullable: true
+        monto:
+          $ref: '#/components/schemas/Monto'
+        moneda:
+          type: string
+          enum: [PEN]
+        medioPago:
+          $ref: '#/components/schemas/MedioPago'
+        ultimos4:
+          type: string
+          pattern: '^[0-9]{4}$'
+        ocurridoEn:
+          type: string
+          format: date-time
+    NotificacionResultado:
+      type: object
+      required: [referencia, resultado]
+      properties:
+        referencia:
+          type: string
+        resultado:
+          type: string
+          enum: [PROCESADA, DUPLICADA, HUERFANA]
+          description: HUERFANA es una notificacion de una reserva inexistente; su monto se reembolsa.
+        pagoId:
+          type: string
+          format: uuid
+          nullable: true
+    PagoEnRevision:
+      type: object
+      required: [pagoId, reservaId, montoCobrado, montoReserva, motivoRevision, enRevisionDesde, resolverAntesDe]
+      properties:
+        pagoId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+        montoCobrado:
+          $ref: '#/components/schemas/Monto'
+        montoReserva:
+          $ref: '#/components/schemas/Monto'
+        motivoRevision:
+          type: string
+          enum: [MONTO_DISTINTO]
+        enRevisionDesde:
+          type: string
+          format: date-time
+        resolverAntesDe:
+          type: string
+          format: date-time
+    PaginaPagosEnRevision:
+      type: object
+      required: [items, pagina, tamanio, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/PagoEnRevision'
+        pagina:
+          type: integer
+        tamanio:
+          type: integer
+        total:
+          type: integer
+    ResolucionPagoSolicitud:
+      type: object
+      required: [decision, motivo]
+      properties:
+        decision:
+          type: string
+          enum: [CONFIRMAR, RECHAZAR]
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+    ReembolsoAjusteSolicitud:
+      type: object
+      required: [monto, motivo]
+      properties:
+        monto:
+          type: number
+          format: double
+          exclusiveMinimum: true
+          minimum: 0
+          multipleOf: 0.01
+          description: Mayor a 0 y sin superar lo efectivamente pagado menos lo ya reembolsado.
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+    AprobacionReembolsoSolicitud:
+      type: object
+      required: [motivo]
+      properties:
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+    Reembolso:
+      type: object
+      required: [reembolsoId, pagoId, motivo, monto, incluyeCargoServicio, estado, intentos, revisionManual, solicitadoEn]
+      properties:
+        reembolsoId:
+          type: string
+          format: uuid
+        pagoId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+          nullable: true
+        motivo:
+          $ref: '#/components/schemas/MotivoReembolso'
+        monto:
+          $ref: '#/components/schemas/Monto'
+        incluyeCargoServicio:
+          type: boolean
+          description: Solo es verdadero en EVENTO_CANCELADO, EVENTO_REPROGRAMADO, PAGO_DUPLICADO y ASIENTO_NO_DISPONIBLE.
+        estado:
+          $ref: '#/components/schemas/EstadoReembolso'
+        intentos:
+          type: integer
+          minimum: 0
+          maximum: 3
+        revisionManual:
+          type: boolean
+          description: Verdadero cuando un reembolso FALLIDO agoto los 3 reintentos en 72 horas.
+        aprobacionesRequeridas:
+          type: integer
+          minimum: 0
+          description: Solo en AJUSTE_ADMIN; 1 hasta S/ 200 y 2 si el monto supera S/ 500.
+        aprobacionesRecibidas:
+          type: integer
+          minimum: 0
+        solicitadoEn:
+          type: string
+          format: date-time
+        completadoEn:
+          type: string
+          format: date-time
+          nullable: true
+    NotaCredito:
+      type: object
+      required: [notaCreditoId, numero, reembolsoId, monto, emitidaEn]
+      properties:
+        notaCreditoId:
+          type: string
+          format: uuid
+        numero:
+          type: string
+          description: Serie y correlativo de la nota de credito.
+        reembolsoId:
+          type: string
+          format: uuid
+        monto:
+          $ref: '#/components/schemas/Monto'
+        emitidaEn:
+          type: string
+          format: date-time
+    Comprobante:
+      type: object
+      required: [comprobanteId, reservaId, pagoId, tipo, serie, correlativo, numero, cliente, valorEntradas, cargoServicio, descuento, igv, total, estado, emitidoEn]
+      properties:
+        comprobanteId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+        pagoId:
+          type: string
+          format: uuid
+        tipo:
+          type: string
+          enum: [BOLETA, FACTURA]
+        serie:
+          type: string
+          maxLength: 4
+        correlativo:
+          type: integer
+          format: int64
+          description: Correlativo por serie, sin saltos ni repeticiones.
+        numero:
+          type: string
+          description: Serie y correlativo legibles.
+        cliente:
+          type: object
+          required: [tipoDocumento, numeroDocumento, nombre]
+          properties:
+            tipoDocumento:
+              type: string
+              enum: [DNI, CARNE_EXTRANJERIA, PASAPORTE, RUC]
+            numeroDocumento:
+              type: string
+            nombre:
+              type: string
+              description: Nombre del cliente, o razon social si es factura.
+        valorEntradas:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        descuento:
+          $ref: '#/components/schemas/Monto'
+        igv:
+          $ref: '#/components/schemas/Monto'
+        total:
+          $ref: '#/components/schemas/Monto'
+        estado:
+          type: string
+          enum: [EMITIDO, ANULADO]
+          description: ANULADO solo mediante nota de credito.
+        emitidoEn:
+          type: string
+          format: date-time
+        notasCredito:
+          type: array
+          items:
+            $ref: '#/components/schemas/NotaCredito'
+    Contracargo:
+      type: object
+      required: [contracargoId, pagoId, monto, estado, notificadoEn, evidenciaLimite, aCargoOrganizador]
+      properties:
+        contracargoId:
+          type: string
+          format: uuid
+        pagoId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        monto:
+          $ref: '#/components/schemas/Monto'
+        estado:
+          $ref: '#/components/schemas/EstadoContracargo'
+        notificadoEn:
+          type: string
+          format: date-time
+        evidenciaLimite:
+          type: string
+          format: date-time
+          description: 7 dias desde la notificacion.
+        evidenciaPresentadaEn:
+          type: string
+          format: date-time
+          nullable: true
+        aCargoOrganizador:
+          type: boolean
+          description: Un contracargo perdido se descuenta de las liquidaciones del organizador del evento.
+    PaginaContracargos:
+      type: object
+      required: [items, pagina, tamanio, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Contracargo'
+        pagina:
+          type: integer
+        tamanio:
+          type: integer
+        total:
+          type: integer
+    ImpugnacionSolicitud:
+      type: object
+      properties:
+        comentario:
+          type: string
+          maxLength: 500
+    DiscrepanciaConciliacion:
+      type: object
+      required: [discrepanciaId, fecha, tipo, estado, abiertaEn, escalada]
+      properties:
+        discrepanciaId:
+          type: string
+          format: uuid
+        fecha:
+          type: string
+          format: date
+          description: Dia conciliado.
+        tipo:
+          $ref: '#/components/schemas/TipoDiscrepancia'
+        estado:
+          $ref: '#/components/schemas/EstadoDiscrepancia'
+        pagoId:
+          type: string
+          format: uuid
+          nullable: true
+        referenciaPasarela:
+          type: string
+          nullable: true
+        montoSistema:
+          $ref: '#/components/schemas/Monto'
+        montoPasarela:
+          $ref: '#/components/schemas/Monto'
+        abiertaEn:
+          type: string
+          format: date-time
+        escalada:
+          type: boolean
+          description: Verdadero si lleva mas de 3 dias abierta; la resuelve un administrador.
+        resueltaPor:
+          type: string
+          format: uuid
+          nullable: true
+        motivoResolucion:
+          type: string
+          nullable: true
+        resueltaEn:
+          type: string
+          format: date-time
+          nullable: true
+    PaginaDiscrepancias:
+      type: object
+      required: [items, pagina, tamanio, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DiscrepanciaConciliacion'
+        pagina:
+          type: integer
+        tamanio:
+          type: integer
+        total:
+          type: integer
+    ResolucionDiscrepanciaSolicitud:
+      type: object
+      required: [accion, motivo]
+      properties:
+        accion:
+          type: string
+          enum: [REEMBOLSAR, ASOCIAR_A_RESERVA, CONFIRMAR_REGISTRO, ANULAR_REGISTRO, AJUSTAR_MONTO]
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+        reservaId:
+          type: string
+          format: uuid
+          description: Obligatorio con ASOCIAR_A_RESERVA.
+    AjusteSolicitud:
+      type: object
+      required: [monto, motivo]
+      properties:
+        monto:
+          $ref: '#/components/schemas/MontoConSigno'
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+        discrepanciaId:
+          type: string
+          format: uuid
+    Ajuste:
+      type: object
+      required: [ajusteId, pagoId, monto, motivo, creadoPor, creadoEn]
+      properties:
+        ajusteId:
+          type: string
+          format: uuid
+        pagoId:
+          type: string
+          format: uuid
+        monto:
+          $ref: '#/components/schemas/MontoConSigno'
+        motivo:
+          type: string
+        discrepanciaId:
+          type: string
+          format: uuid
+          nullable: true
+        creadoPor:
+          type: string
+          format: uuid
+        creadoEn:
+          type: string
+          format: date-time
+    Liquidacion:
+      type: object
+      required: [liquidacionId, eventoId, organizadorId, estado, ventasBrutasEntradas, descuentosFinanciadosOrganizador, descuentosFinanciadosPlataforma, ventasNetas, comisionPorcentaje, comision, reembolsos, contracargos, penalizaciones, deudasCompensadas, montoRetenido, montoAPagar, deudaGenerada, generadaEn]
+      properties:
+        liquidacionId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        organizadorId:
+          type: string
+          format: uuid
+        estado:
+          $ref: '#/components/schemas/EstadoLiquidacion'
+        ventasBrutasEntradas:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosOrganizador:
+          $ref: '#/components/schemas/Monto'
+        descuentosFinanciadosPlataforma:
+          $ref: '#/components/schemas/Monto'
+        ventasNetas:
+          $ref: '#/components/schemas/Monto'
+        comisionPorcentaje:
+          type: number
+          minimum: 3
+          maximum: 15
+        comision:
+          $ref: '#/components/schemas/Monto'
+        reembolsos:
+          $ref: '#/components/schemas/Monto'
+        contracargos:
+          $ref: '#/components/schemas/Monto'
+        penalizaciones:
+          $ref: '#/components/schemas/Monto'
+        deudasCompensadas:
+          $ref: '#/components/schemas/Monto'
+        montoRetenido:
+          $ref: '#/components/schemas/Monto'
+        montoAPagar:
+          $ref: '#/components/schemas/Monto'
+        deudaGenerada:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        cuentaDestino:
+          type: object
+          nullable: true
+          properties:
+            banco:
+              type: string
+            cciEnmascarado:
+              type: string
+        observacion:
+          type: string
+          nullable: true
+        generadaEn:
+          type: string
+          format: date-time
+        aprobadaEn:
+          type: string
+          format: date-time
+          nullable: true
+        pagadaEn:
+          type: string
+          format: date-time
+          nullable: true
+    PaginaLiquidaciones:
+      type: object
+      required: [items, pagina, tamanio, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Liquidacion'
+        pagina:
+          type: integer
+        tamanio:
+          type: integer
+        total:
+          type: integer
+    MotivoSolicitud:
+      type: object
+      required: [motivo]
+      properties:
+        motivo:
+          type: string
+          minLength: 1
+          maxLength: 300
+    PagoLiquidacionSolicitud:
+      type: object
+      required: [referenciaTransferencia]
+      properties:
+        referenciaTransferencia:
+          type: string
+          description: Referencia de la transferencia bancaria a la cuenta verificada del organizador.
+    ReporteVentas:
+      type: object
+      required: [eventoId, zonaHoraria, corteEn, reservasConfirmadas, reservasFinalizadas, entradasVendidas, ventasBrutas, descuentos, cargoServicio, igvIncluido, comision, netoAntesDeReembolsos, reembolsos, netoFinal, porZona, porFase, porCupon]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        zonaHoraria:
+          type: string
+          enum: [America/Lima]
+        corteEn:
+          type: string
+          format: date-time
+          description: Momento al que corresponden las cifras, en hora de Lima.
+        reservasConfirmadas:
+          type: integer
+          minimum: 0
+        reservasFinalizadas:
+          type: integer
+          minimum: 0
+        entradasVendidas:
+          type: integer
+          minimum: 0
+        ventasBrutas:
+          $ref: '#/components/schemas/Monto'
+        descuentos:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        comision:
+          $ref: '#/components/schemas/Monto'
+        netoAntesDeReembolsos:
+          $ref: '#/components/schemas/MontoConSigno'
+        reembolsos:
+          $ref: '#/components/schemas/Monto'
+        netoFinal:
+          $ref: '#/components/schemas/MontoConSigno'
+        porZona:
+          type: array
+          items:
+            type: object
+            required: [zonaId, entradasVendidas, ventasBrutas, descuentos]
+            properties:
+              zonaId:
+                type: string
+                format: uuid
+              entradasVendidas:
+                type: integer
+              ventasBrutas:
+                $ref: '#/components/schemas/Monto'
+              descuentos:
+                $ref: '#/components/schemas/Monto'
+        porFase:
+          type: array
+          items:
+            type: object
+            required: [fase, entradasVendidas, ventasBrutas, descuentos]
+            properties:
+              fase:
+                type: string
+                enum: [PREVENTA, GENERAL, ULTIMA_HORA]
+              entradasVendidas:
+                type: integer
+              ventasBrutas:
+                $ref: '#/components/schemas/Monto'
+              descuentos:
+                $ref: '#/components/schemas/Monto'
+        porCupon:
+          type: array
+          items:
+            type: object
+            required: [codigo, usos, descuentoTotal, financiadoPor]
+            properties:
+              codigo:
+                type: string
+              usos:
+                type: integer
+              descuentoTotal:
+                $ref: '#/components/schemas/Monto'
+              financiadoPor:
+                type: string
+                enum: [PLATAFORMA, ORGANIZADOR]
+    SituacionFinancieraOrganizador:
+      type: object
+      required: [organizadorId, deudaPendiente, tieneDeudasVencidas, saldoPendienteLiquidar, liquidacionesPendientes]
+      properties:
+        organizadorId:
+          type: string
+          format: uuid
+        deudaPendiente:
+          $ref: '#/components/schemas/Monto'
+        tieneDeudasVencidas:
+          type: boolean
+          description: Bloquea la creacion de eventos nuevos (HU-02).
+        saldoPendienteLiquidar:
+          $ref: '#/components/schemas/Monto'
+        liquidacionesPendientes:
+          type: integer
+          minimum: 0

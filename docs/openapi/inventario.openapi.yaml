@@ -1,0 +1,1217 @@
+openapi: 3.0.3
+info:
+  title: Inventario - API (frontend y otros microservicios)
+  version: 1.0.0
+  description: 'Cubre las HU de Inventario que se exponen por HTTP: inventario y disponibilidad (HU-10), bloqueos
+    y su liberacion (HU-11, HU-12; el cliente los usa por Reservas), cupos retenidos y cortesias (HU-13) y lista
+    de espera (HU-39, HU-40). Las rutas /api/v1 las consume el frontend por el gateway y las /internal las consume
+    Reservas.'
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+- url: http://inventario:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Bloqueos
+- name: Ventas
+- name: Inventario
+- name: Cortesias
+- name: Lista de espera
+paths:
+  /internal/bloqueos:
+    post:
+      tags:
+      - Bloqueos
+      operationId: crearBloqueo
+      summary: Bloquear asientos temporalmente (todos o ninguno)
+      description: |
+        Bloquea por 10 minutos los asientos o cupos pedidos. Solo se bloquea lo que esta
+        DISPONIBLE y el evento debe estar EN_VENTA. Si dos solicitudes compiten por el mismo
+        asiento, solo una lo obtiene. Reservas valida antes el estado del cliente y su limite
+        de compra; Inventario controla la concurrencia y la capacidad.
+      x-hu:
+      - HU-10
+      - HU-11
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/IdempotencyKey'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BloqueoSolicitud'
+      responses:
+        '201':
+          description: Asientos bloqueados
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '200':
+          description: La misma Idempotency-Key ya creo este bloqueo; se devuelve el existente.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '409':
+          description: |
+            ASIENTO_NO_DISPONIBLE (algun asiento no esta DISPONIBLE) o CAPACIDAD_INSUFICIENTE
+            (la zona GENERAL no tiene cupos suficientes). No se bloquea nada.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: EVENTO_NO_EN_VENTA o ZONA_NO_HABILITADA.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /internal/bloqueos/{bloqueoId}:
+    get:
+      tags:
+      - Bloqueos
+      operationId: obtenerBloqueo
+      summary: Consultar un bloqueo y su vigencia
+      description: |
+        Reservas lo usa antes de crear la reserva para confirmar que el bloqueo sigue vigente
+        y es del mismo cliente. Un bloqueo vencido nunca se considera VIGENTE aunque la
+        liberacion fisica aun no se haya ejecutado.
+      x-hu:
+      - HU-11
+      - HU-12
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/BloqueoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Bloqueo
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /internal/bloqueos/{bloqueoId}/extension:
+    post:
+      tags:
+      - Bloqueos
+      operationId: extenderBloqueo
+      summary: Extender un bloqueo mientras hay un pago pendiente de resultado
+      description: |
+        PAGO_EN_PROCESO extiende 5 minutos, una sola vez, hasta conocer el resultado.
+        PAGO_EN_REVISION mantiene el bloqueo hasta que se resuelva, con un maximo de 24 horas
+        desde el momento indicado en "desde".
+      x-hu:
+      - HU-12
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/BloqueoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ExtensionSolicitud'
+      responses:
+        '200':
+          description: Bloqueo extendido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: EXTENSION_YA_APLICADA o BLOQUEO_NO_VIGENTE.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /internal/bloqueos/{bloqueoId}/liberacion:
+    post:
+      tags:
+      - Bloqueos
+      operationId: liberarBloqueo
+      summary: Liberar los asientos de un bloqueo
+      description: |
+        Los asientos vuelven a DISPONIBLE y se revisa la lista de espera de la zona.
+        Es idempotente: liberar un bloqueo ya LIBERADO responde 200 sin repetir el efecto.
+        El vencimiento natural lo ejecuta Inventario por su cuenta.
+      x-hu:
+      - HU-12
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/BloqueoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LiberacionSolicitud'
+      responses:
+        '200':
+          description: Bloqueo liberado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: BLOQUEO_YA_VENDIDO; para devolver asientos vendidos se usa la anulacion de venta.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /internal/bloqueos/{bloqueoId}/venta:
+    post:
+      tags:
+      - Ventas
+      operationId: confirmarVenta
+      summary: Marcar como VENDIDOS los asientos de un bloqueo tras un pago aprobado
+      description: |
+        Pasa los asientos de BLOQUEADO a VENDIDO. Si el bloqueo ya vencio (o fue liberado)
+        y los asientos siguen DISPONIBLES, Inventario los recupera y los vende
+        (recuperadoTrasVencimiento = true). Si otro cliente ya los tomo, responde 409 y
+        Reservas debe reembolsar el 100%. Es idempotente para la misma reserva.
+      x-hu:
+      - HU-10
+      - HU-20
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/BloqueoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VentaSolicitud'
+      responses:
+        '200':
+          description: Asientos vendidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VentaConfirmada'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: |
+            ASIENTOS_NO_DISPONIBLES (otro cliente los tomo) o BLOQUEO_VENDIDO_A_OTRA_RESERVA.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /internal/bloqueos/{bloqueoId}/anulacion-venta:
+    post:
+      tags:
+      - Ventas
+      operationId: anularVenta
+      summary: Devolver a DISPONIBLE los asientos vendidos de una reserva cancelada
+      description: |
+        Pasa los asientos de VENDIDO a DISPONIBLE cuando se cancela una reserva CONFIRMADA o
+        se acepta un reembolso por reprogramacion. Es idempotente.
+      x-hu:
+      - HU-10
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/BloqueoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AnulacionVentaSolicitud'
+      responses:
+        '200':
+          description: Venta anulada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Bloqueo'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: BLOQUEO_NO_VENDIDO; solo se anulan ventas existentes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+  /api/v1/eventos/{eventoId}/disponibilidad:
+    get:
+      tags:
+      - Inventario
+      operationId: consultarDisponibilidad
+      summary: Ver la disponibilidad por zona
+      description: Disponible = capacidad ofrecida menos bloqueados, vendidos, retenidos e inhabilitados.
+      x-hu:
+      - HU-10
+      security: []
+      parameters:
+      - &id001
+        name: eventoId
+        in: path
+        required: true
+        schema: &id002
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Disponibilidad
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisponibilidadEvento'
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: &id003
+                $ref: '#/components/schemas/Problema'
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}/asientos:
+    get:
+      tags:
+      - Inventario
+      operationId: consultarMapaAsientos
+      summary: Ver el mapa de asientos de una zona numerada
+      description: Solo los asientos DISPONIBLES son seleccionables.
+      x-hu:
+      - HU-10
+      security: []
+      parameters:
+      - *id001
+      - &id004
+        name: zonaId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '200':
+          description: Mapa de asientos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MapaAsientos'
+        '404':
+          description: ZONA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id003
+        '422':
+          description: ZONA_NO_NUMERADA
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/eventos/{eventoId}/retenciones:
+    post:
+      tags:
+      - Cortesias
+      operationId: retenerCupos
+      summary: Retener cupos de un evento
+      description: Hasta 10% de la capacidad ofrecida por zona. Los retenidos no se venden al publico y se liberan
+        solos a venta 72 horas antes del evento si no se emiten.
+      x-hu:
+      - HU-13
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RetencionSolicitud'
+      responses:
+        '201':
+          description: Cupos retenidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Retencion'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id003
+        '409':
+          description: ASIENTO_NO_DISPONIBLE
+          content:
+            application/problem+json:
+              schema: *id003
+        '422':
+          description: LIMITE_DE_RETENCION_EXCEDIDO
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/eventos/{eventoId}/retenciones/{retencionId}:
+    delete:
+      tags:
+      - Cortesias
+      operationId: liberarRetencion
+      summary: Devolver cupos retenidos a venta publica
+      description: Solo mientras no se hayan emitido como cortesia.
+      x-hu:
+      - HU-13
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id001
+      - name: retencionId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '204':
+          description: Retencion liberada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '404':
+          description: RETENCION_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id003
+        '409':
+          description: RETENCION_YA_EMITIDA
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/eventos/{eventoId}/cortesias:
+    post:
+      tags:
+      - Cortesias
+      operationId: emitirCortesia
+      summary: Emitir una cortesia
+      description: Entrada de precio 0 para el beneficiario indicado, sin cargo, impuestos, comision ni liquidacion.
+        No es reembolsable ni transferible. La entrada se emite de forma asincrona en Entradas.
+      x-hu:
+      - HU-13
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id001
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CortesiaSolicitud'
+      responses:
+        '202':
+          description: Cortesia en emision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CortesiaAceptada'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '404':
+          description: RETENCION_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id003
+        '409':
+          description: RETENCION_YA_EMITIDA
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}/lista-espera:
+    post:
+      tags:
+      - Lista de espera
+      operationId: unirseListaEspera
+      summary: Unirse a la lista de espera de una zona agotada
+      description: Solo en zonas sin disponibilidad de eventos EN_VENTA o AGOTADO. De 1 a 4 entradas, una solicitud
+        activa por zona, sin exceder el limite de compra restante (Inventario consulta a Reservas). Orden estricto
+        por fecha y hora.
+      x-hu:
+      - HU-39
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - *id001
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListaEsperaSolicitud'
+      responses:
+        '201':
+          description: Solicitud registrada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SolicitudListaEspera'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '409':
+          description: SOLICITUD_ACTIVA_EXISTENTE
+          content:
+            application/problem+json:
+              schema: *id003
+        '422':
+          description: ZONA_CON_DISPONIBILIDAD, LIMITE_DE_COMPRA_EXCEDIDO, CLIENTE_NO_ACTIVO o EVENTO_NO_EN_VENTA
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/lista-espera/mias:
+    get:
+      tags:
+      - Lista de espera
+      operationId: listarMisSolicitudesListaEspera
+      summary: Ver mis solicitudes de lista de espera y sus ofertas
+      description: Muestra posicion, estado y, si hay una oferta de 15 minutos, el bloqueo para pagarla.
+      x-hu:
+      - HU-39
+      - HU-40
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      responses:
+        '200':
+          description: Solicitudes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SolicitudListaEspera'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/lista-espera/{solicitudId}:
+    delete:
+      tags:
+      - Lista de espera
+      operationId: salirListaEspera
+      summary: Salir de la lista de espera
+      description: El cliente puede salir en cualquier momento.
+      x-hu:
+      - HU-39
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: solicitudId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '204':
+          description: Solicitud cancelada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '404':
+          description: SOLICITUD_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id003
+  /api/v1/lista-espera/{solicitudId}/oferta/rechazo:
+    post:
+      tags:
+      - Lista de espera
+      operationId: rechazarOferta
+      summary: Rechazar una oferta de la lista de espera
+      description: El cliente sale de la lista y se ofrece al siguiente. Aceptar la oferta es crear la reserva con
+        el bloqueo de la oferta (Reservas).
+      x-hu:
+      - HU-40
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      parameters:
+      - name: solicitudId
+        in: path
+        required: true
+        schema: *id002
+      responses:
+        '204':
+          description: Oferta rechazada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id003
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id003
+        '404':
+          description: SOLICITUD_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id003
+        '409':
+          description: OFERTA_NO_VIGENTE
+          content:
+            application/problem+json:
+              schema: *id003
+  /internal/eventos/{eventoId}/ocupacion:
+    get:
+      tags:
+      - Inventario
+      operationId: obtenerOcupacionEvento
+      summary: Obtener la ocupacion actual de las zonas de un evento
+      description: |
+        Catalogo lo usa para validar que la capacidad ofrecida de una zona no se reduzca por debajo de la suma de
+        entradas vendidas, bloqueadas y retenidas (HU-05), y para calcular la tarifa dinamica, que sube al pasar el
+        50%, 75% y 90% de ocupacion, entendida como vendidas mas bloqueadas sobre la capacidad ofrecida (HU-08).
+      x-hu:
+      - HU-05
+      - HU-08
+      x-llamado-por:
+      - catalogo
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://inventario:8080
+      parameters:
+      - name: eventoId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Ocupacion por zona
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OcupacionEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          description: EVENTO_SIN_INVENTARIO (el evento aun no se publico, asi que no se genero su inventario).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las
+        HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+  parameters:
+    BloqueoId:
+      name: bloqueoId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Evita crear dos bloqueos si Reservas reintenta la misma solicitud.
+      schema:
+        type: string
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+  responses:
+    NoAutorizado:
+      description: Token de servicio ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoEncontrado:
+      description: El recurso no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    BloqueoSolicitud:
+      type: object
+      required:
+      - clienteId
+      - eventoId
+      - items
+      properties:
+        clienteId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        items:
+          type: array
+          minItems: 1
+          items:
+            oneOf:
+            - $ref: '#/components/schemas/ItemNumerado'
+            - $ref: '#/components/schemas/ItemGeneral'
+    ItemNumerado:
+      type: object
+      description: Zona NUMERADA, se piden asientos concretos.
+      required:
+      - zonaId
+      - asientoIds
+      properties:
+        zonaId:
+          type: string
+          format: uuid
+        asientoIds:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: uuid
+    ItemGeneral:
+      type: object
+      description: Zona GENERAL, se pide una cantidad de cupos.
+      required:
+      - zonaId
+      - cantidad
+      properties:
+        zonaId:
+          type: string
+          format: uuid
+        cantidad:
+          type: integer
+          minimum: 1
+    Bloqueo:
+      type: object
+      required:
+      - bloqueoId
+      - clienteId
+      - eventoId
+      - origen
+      - estado
+      - creadoEn
+      - expiraEn
+      - items
+      properties:
+        bloqueoId:
+          type: string
+          format: uuid
+        clienteId:
+          type: string
+          format: uuid
+        eventoId:
+          type: string
+          format: uuid
+        origen:
+          type: string
+          enum:
+          - SOLICITUD_CLIENTE
+          - OFERTA_LISTA_ESPERA
+          description: OFERTA_LISTA_ESPERA es un bloqueo de 15 minutos creado por Inventario.
+        estado:
+          type: string
+          enum:
+          - VIGENTE
+          - VENCIDO
+          - LIBERADO
+          - VENDIDO
+          - VENTA_ANULADA
+        creadoEn:
+          type: string
+          format: date-time
+        expiraEn:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            type: object
+            required:
+            - zonaId
+            - cantidad
+            properties:
+              zonaId:
+                type: string
+                format: uuid
+              cantidad:
+                type: integer
+              asientoIds:
+                type: array
+                description: Presente solo en zonas NUMERADAS.
+                items:
+                  type: string
+                  format: uuid
+    ExtensionSolicitud:
+      type: object
+      required:
+      - motivo
+      properties:
+        motivo:
+          type: string
+          enum:
+          - PAGO_EN_PROCESO
+          - PAGO_EN_REVISION
+        desde:
+          type: string
+          format: date-time
+          description: Obligatorio si el motivo es PAGO_EN_REVISION; inicia el maximo de 24 horas.
+    LiberacionSolicitud:
+      type: object
+      required:
+      - motivo
+      properties:
+        motivo:
+          type: string
+          enum:
+          - VOLUNTARIA
+          - RESERVA_CANCELADA
+          - PAGOS_FALLIDOS
+          - REVISION_NO_RESUELTA
+    VentaSolicitud:
+      type: object
+      required:
+      - reservaId
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+    VentaConfirmada:
+      type: object
+      required:
+      - bloqueoId
+      - reservaId
+      - estado
+      - recuperadoTrasVencimiento
+      - items
+      properties:
+        bloqueoId:
+          type: string
+          format: uuid
+        reservaId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - VENDIDO
+        recuperadoTrasVencimiento:
+          type: boolean
+          description: Verdadero si el bloqueo habia vencido y los asientos se recuperaron al vender.
+        items:
+          type: array
+          items:
+            type: object
+            required:
+            - zonaId
+            - cantidad
+            properties:
+              zonaId:
+                type: string
+                format: uuid
+              cantidad:
+                type: integer
+              asientoIds:
+                type: array
+                items:
+                  type: string
+                  format: uuid
+    AnulacionVentaSolicitud:
+      type: object
+      required:
+      - reservaId
+      - motivo
+      properties:
+        reservaId:
+          type: string
+          format: uuid
+        motivo:
+          type: string
+          enum:
+          - CANCELACION_CLIENTE
+          - REEMBOLSO_REPROGRAMACION
+    Problema:
+      type: object
+      required:
+      - codigo
+      - titulo
+      - estado
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo ASIENTO_NO_DISPONIBLE).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        asientoIds:
+          type: array
+          description: Asientos que impidieron la operacion, si aplica.
+          items:
+            type: string
+            format: uuid
+        estado:
+          type: integer
+    DisponibilidadEvento:
+      type: object
+      properties:
+        eventoId: *id002
+        estado:
+          type: string
+          enum:
+          - BORRADOR
+          - PUBLICADO
+          - EN_VENTA
+          - AGOTADO
+          - FINALIZADO
+          - CANCELADO
+        zonas:
+          type: array
+          items:
+            type: object
+            properties:
+              zonaId: *id002
+              nombre: &id006
+                type: string
+              tipo:
+                type: string
+                enum:
+                - NUMERADA
+                - GENERAL
+              capacidadOfrecida: &id005
+                type: integer
+              disponibles: *id005
+            required:
+            - zonaId
+            - nombre
+            - tipo
+            - capacidadOfrecida
+            - disponibles
+      required:
+      - eventoId
+      - estado
+      - zonas
+    MapaAsientos:
+      type: object
+      properties:
+        zonaId: *id002
+        asientos:
+          type: array
+          items:
+            type: object
+            properties:
+              asientoId: *id002
+              fila: *id006
+              numero: *id005
+              disponible:
+                type: boolean
+                description: Solo los asientos disponibles se pueden seleccionar.
+              accesible:
+                type: boolean
+            required:
+            - asientoId
+            - fila
+            - numero
+            - disponible
+      required:
+      - zonaId
+      - asientos
+    RetencionSolicitud:
+      type: object
+      properties:
+        zonaId: *id002
+        asientoIds:
+          type: array
+          items: *id002
+        cantidad:
+          type: integer
+          minimum: 1
+      required:
+      - zonaId
+      description: Indicar asientoIds (zona NUMERADA) o cantidad (zona GENERAL). El total retenido por zona no puede
+        superar el 10% de la capacidad ofrecida.
+    Retencion:
+      type: object
+      properties:
+        retencionId: *id002
+        eventoId: *id002
+        zonaId: *id002
+        asientoIds:
+          type: array
+          items: *id002
+        cantidad: *id005
+        estado:
+          type: string
+          enum:
+          - RETENIDA
+          - LIBERADA
+          - EMITIDA
+      required:
+      - retencionId
+      - eventoId
+      - zonaId
+      - estado
+    CortesiaSolicitud:
+      type: object
+      properties:
+        retencionId: *id002
+        beneficiarioNombre: *id006
+        beneficiarioDocumento:
+          $ref: '#/components/schemas/DocumentoBeneficiario'
+      required:
+      - retencionId
+      - beneficiarioNombre
+      - beneficiarioDocumento
+    DocumentoBeneficiario:
+      type: object
+      properties:
+        tipo:
+          type: string
+          enum:
+          - DNI
+          - CARNE_EXTRANJERIA
+          - PASAPORTE
+        numero: *id006
+      required:
+      - tipo
+      - numero
+    CortesiaAceptada:
+      type: object
+      properties:
+        cortesiaId: *id002
+        estado:
+          type: string
+          enum:
+          - EN_EMISION
+      required:
+      - cortesiaId
+      - estado
+    ListaEsperaSolicitud:
+      type: object
+      properties:
+        cantidad:
+          type: integer
+          minimum: 1
+          maximum: 4
+      required:
+      - cantidad
+    SolicitudListaEspera:
+      type: object
+      properties:
+        solicitudId: *id002
+        eventoId: *id002
+        zonaId: *id002
+        cantidad: *id005
+        estado:
+          type: string
+          enum:
+          - ACTIVA
+          - OFERTA_PENDIENTE
+          - COMPLETADA
+          - SALIDA
+          - EXPIRADA
+        posicion: *id005
+        creadaEn: &id007
+          type: string
+          format: date-time
+        oferta:
+          type: object
+          properties:
+            bloqueoId:
+              type: string
+              format: uuid
+              description: Para aceptar la oferta se crea la reserva con este bloqueo (Reservas).
+            expiraEn: *id007
+          required:
+          - bloqueoId
+          - expiraEn
+          nullable: true
+      required:
+      - solicitudId
+      - eventoId
+      - zonaId
+      - cantidad
+      - estado
+      - posicion
+      - creadaEn
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.
+    OcupacionEvento:
+      type: object
+      required: [eventoId, zonas, corteEn]
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        zonas:
+          type: array
+          items:
+            type: object
+            required: [zonaId, capacidadOfrecida, vendidas, bloqueadas, retenidas, inhabilitadas, disponibles, ocupacionPorcentaje]
+            properties:
+              zonaId:
+                type: string
+                format: uuid
+              capacidadOfrecida:
+                type: integer
+                minimum: 0
+              vendidas:
+                type: integer
+                minimum: 0
+              bloqueadas:
+                type: integer
+                minimum: 0
+              retenidas:
+                type: integer
+                minimum: 0
+              inhabilitadas:
+                type: integer
+                minimum: 0
+              disponibles:
+                type: integer
+                minimum: 0
+                description: Capacidad ofrecida menos bloqueadas, vendidas, retenidas e inhabilitadas.
+              ocupacionPorcentaje:
+                type: number
+                minimum: 0
+                maximum: 100
+                description: (vendidas + bloqueadas) / capacidad ofrecida.
+        corteEn:
+          type: string
+          format: date-time

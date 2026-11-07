@@ -1,0 +1,61 @@
+Project notificaciones {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio NOTIFICACIONES. HU-43. Consume Identidad (contacto del cliente) y recibe hechos de negocio por eventos.
+  Referencias a otros servicios: logicas (sin FK). No se guarda el correo: se consulta a Identidad al enviar.
+  '''
+}
+
+Enum tipo_notificacion {
+  CONFIRMACION_RESERVA
+  EVENTO_CANCELADO
+  EVENTO_REPROGRAMADO
+  REEMBOLSO_EMITIDO
+  RECORDATORIO_EVENTO
+  BLOQUEO_POR_VENCER
+  OFERTA_LISTA_ESPERA
+}
+
+Enum estado_notificacion {
+  PROGRAMADA
+  PENDIENTE
+  ENVIADA
+  FALLIDA
+  OMITIDA_POR_PREFERENCIA
+}
+
+Table notificaciones {
+  id uuid [pk]
+  tipo tipo_notificacion [not null]
+  destinatario_id uuid [not null, note: 'Ref logica identidad.usuarios']
+  hecho_negocio_id uuid [not null, note: 'Id del hecho que origina el aviso (reserva, reembolso, evento, oferta...)']
+  es_transaccional boolean [not null, note: 'Confirmacion, cancelacion y reembolso: el cliente no puede desactivarlas']
+  estado estado_notificacion [not null, default: 'PENDIENTE']
+  contexto jsonb [not null, default: '{}', note: 'Datos para armar el mensaje (monto, motivo, plazo, codigo de reserva, entradas). Sin datos sensibles de pago']
+  programada_para timestamptz [note: 'Recordatorio 24 h antes del evento; aviso 2 minutos antes de vencer un bloqueo']
+  intentos smallint [not null, default: 0]
+  ultimo_error varchar(300)
+  creada_en timestamptz [not null, default: `now()`]
+  enviada_en timestamptz
+
+  indexes {
+    (tipo, hecho_negocio_id, destinatario_id) [unique, name: 'ux_notificacion_unica', note: 'Cada hecho de negocio genera una sola notificacion al mismo destinatario']
+    (estado, programada_para)
+    destinatario_id
+  }
+}
+
+Table preferencias_notificacion {
+  usuario_id uuid [not null, note: 'Ref logica identidad.usuarios']
+  tipo tipo_notificacion [not null]
+  habilitada boolean [not null, default: true, note: 'No aplica a tipos transaccionales (siempre se envian)']
+  actualizada_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (usuario_id, tipo) [pk]
+  }
+
+  checks {
+    `habilitada or tipo not in ('CONFIRMACION_RESERVA','EVENTO_CANCELADO','EVENTO_REPROGRAMADO','REEMBOLSO_EMITIDO')` [name: 'ck_pref_transaccionales']
+  }
+}

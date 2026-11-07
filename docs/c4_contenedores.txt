@@ -1,0 +1,115 @@
+workspace "Plataforma de venta de entradas" "C4 nivel 2: infraestructura limpia" {
+
+    model {
+
+        cliente = person "Cliente" "Reserva, paga, cancela y transfiere entradas."
+        organizador = person "Organizador" "Gestiona sus eventos, precios, cupones, cortesias y reportes."
+        puerta = person "Personal de puerta" "Valida entradas en el evento asignado."
+        soporte = person "Soporte y administrador" "Resuelve pagos en revision, reembolsos, bloqueos y liquidaciones."
+
+        pasarela = softwareSystem "Pasarela de pago" "Procesa cobros, reembolsos y contracargos." "Externo"
+        correo = softwareSystem "Proveedor de correo" "Entrega los correos al cliente." "Externo"
+
+        plataforma = softwareSystem "Plataforma de venta de entradas" "Venta, pago y control de acceso de entradas." {
+
+            gateway = container "API Gateway" "Punto de entrada publico; enruta las solicitudes a los servicios." "API Gateway"
+
+            identidad = container "Identidad" "Cuentas de cliente, roles, bloqueos y asignacion de personal de puerta." "Microservicio REST (OpenAPI 3.0.3)"
+            identidadDb = container "BD Identidad" "Usuarios, roles, bloqueos, apelaciones y asignaciones de puerta." "PostgreSQL" "Base de datos"
+
+            catalogo = container "Catalogo" "Sedes, zonas, eventos, precios, fases, tarifa dinamica, organizadores y comision." "Microservicio REST (OpenAPI 3.0.3)"
+            catalogoDb = container "BD Catalogo" "Sedes, zonas, asientos, eventos, precios y organizadores." "PostgreSQL" "Base de datos"
+
+            inventario = container "Inventario" "Control de asientos y cupos, bloqueos temporales, retenciones y lista de espera." "Microservicio REST (OpenAPI 3.0.3)"
+            inventarioDb = container "BD Inventario" "Unidades de inventario, bloqueos, retenciones y lista de espera." "PostgreSQL" "Base de datos"
+
+            reservas = container "Reservas" "Ciclo de vida de la reserva, cupones, limites de compra y cancelaciones." "Microservicio REST (OpenAPI 3.0.3)"
+            reservasDb = container "BD Reservas" "Reservas, lineas, asistentes, transiciones, cancelaciones y cupones." "PostgreSQL" "Base de datos"
+
+            entradas = container "Entradas" "Emision, validacion en puerta, transferencia y anulacion de entradas." "Microservicio REST (OpenAPI 3.0.3)"
+            entradasDb = container "BD Entradas" "Entradas, accesos y transferencias." "PostgreSQL" "Base de datos"
+
+            pagos = container "Pagos" "Cobros, reembolsos, comprobantes, contracargos, conciliacion y liquidaciones." "Microservicio REST (OpenAPI 3.0.3)"
+            pagosDb = container "BD Pagos" "Pagos, reembolsos, comprobantes, contracargos, conciliacion y liquidaciones." "PostgreSQL" "Base de datos"
+
+            notificaciones = container "Notificaciones" "Avisos de negocio al cliente, sin duplicados." "Microservicio REST (OpenAPI 3.0.3)"
+            notificacionesDb = container "BD Notificaciones" "Notificaciones y preferencias." "PostgreSQL" "Base de datos"
+
+            auditoria = container "Auditoria" "Registro inmutable de operaciones criticas, conservado 5 anios." "Microservicio REST (OpenAPI 3.0.3)"
+            auditoriaDb = container "BD Auditoria" "Registros de auditoria." "PostgreSQL" "Base de datos"
+
+            broker = container "Message broker" "Transporta los eventos de negocio entre servicios." "Message broker" "Broker"
+        }
+
+        # 1. Acceso de Usuarios -> Gateway
+        cliente -> gateway "HTTPS"
+        organizador -> gateway "HTTPS"
+        puerta -> gateway "HTTPS"
+        soporte -> gateway "HTTPS"
+
+        # 2. Enrutamiento del Gateway -> Servicios
+        gateway -> identidad "Enruta solicitudes" "HTTP/JSON"
+        gateway -> catalogo "Enruta solicitudes" "HTTP/JSON"
+        gateway -> inventario "Enruta solicitudes" "HTTP/JSON"
+        gateway -> reservas "Enruta solicitudes" "HTTP/JSON"
+        gateway -> entradas "Enruta solicitudes" "HTTP/JSON"
+        gateway -> pagos "Enruta solicitudes" "HTTP/JSON"
+        gateway -> notificaciones "Enruta solicitudes" "HTTP/JSON"
+        gateway -> auditoria "Enruta solicitudes" "HTTP/JSON"
+
+        # 3. Servicios -> Su propia Base de Datos (Persistencia aislada)
+        identidad -> identidadDb "SQL"
+        catalogo -> catalogoDb "SQL"
+        inventario -> inventarioDb "SQL"
+        reservas -> reservasDb "SQL"
+        entradas -> entradasDb "SQL"
+        pagos -> pagosDb "SQL"
+        notificaciones -> notificacionesDb "SQL"
+        auditoria -> auditoriaDb "SQL"
+
+        # 4. Integraciones con Sistemas Externos
+        pagos -> pasarela "HTTPS"
+        notificaciones -> correo "HTTPS/SMTP"
+    }
+
+    views {
+
+        container plataforma "InfraestructuraLimpia" "C4 nivel 2: Vista limpia de la infraestructura de contenedores." {
+            include *
+            autolayout tb 200 120
+        }
+
+        styles {
+            element "Person" {
+                shape Person
+                background #08427b
+                color #ffffff
+            }
+            element "Software System" {
+                background #1168bd
+                color #ffffff
+            }
+            element "Externo" {
+                background #999999
+                color #ffffff
+            }
+            element "Container" {
+                background #438dd5
+                color #ffffff
+            }
+            element "Base de datos" {
+                shape Cylinder
+                background #2f6f9f
+                color #ffffff
+            }
+            element "Broker" {
+                shape Pipe
+                background #6b4fa3
+                color #ffffff
+            }
+            relationship "Relationship" {
+                routing Orthogonal
+            }
+        }
+    }
+}

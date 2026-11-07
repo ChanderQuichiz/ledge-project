@@ -1,0 +1,487 @@
+"Summary","Issue Type","Description"
+"HU-01: Registrar sedes y zonas","Story","Como administrador quiero registrar sedes con sus zonas y asientos para poder organizar eventos con una capacidad real y controlada.
+
+*Criterios de aceptación*
+* Una sede tiene nombre, dirección, ciudad y aforo máximo legal mayor a 0.
+* Una sede debe tener al menos una zona para poder usarse en un evento.
+* El nombre de una zona es único dentro de la sede.
+* Una zona es de tipo NUMERADA (asientos individuales) o GENERAL (cupos por aforo).
+* La suma de las capacidades de las zonas no puede superar el aforo máximo legal de la sede.
+* Los asientos de una zona NUMERADA se identifican por fila y número, únicos dentro de la zona.
+* Un asiento inhabilitado (mantenimiento, visibilidad reducida) no se puede vender ni bloquear.
+* Una sede define sus puntos de acceso y las zonas a las que da ingreso cada uno.
+* Los asientos accesibles se marcan como tales y solo se venden a clientes que declaren requerirlos hasta 72 horas antes del evento; después pasan a venta general.
+* Una sede o zona con eventos futuros publicados no se puede eliminar, y solo se puede desactivar si no tiene ventas."
+"HU-02: Crear evento","Story","Como organizador verificado quiero crear un evento en una sede para empezar a configurarlo antes de venderlo.
+
+*Criterios de aceptación*
+* Solo un organizador en estado VERIFICADO puede crear eventos.
+* Un evento nuevo siempre inicia en estado BORRADOR.
+* La fecha de inicio debe ser al menos 72 horas posterior al momento de creación.
+* La fecha de fin debe ser posterior a la fecha de inicio.
+* Una sede no puede tener dos eventos con horarios superpuestos, considerando 2 horas de montaje antes y 2 horas de desmontaje después de cada evento.
+* El evento define una categoría y una restricción de edad: TODO_PUBLICO, +14 o +18.
+* El evento define su política de cancelación: ESTANDAR, FLEXIBLE o NO_REEMBOLSABLE.
+* El evento define si permite reingreso (y, si lo permite, el máximo de reingresos por entrada), la hora de apertura de puertas (no posterior al inicio) y si sus entradas son nominativas.
+* Un organizador con deudas vencidas con la plataforma no puede crear eventos nuevos."
+"HU-03: Publicar evento","Story","Como organizador quiero publicar mi evento para que los clientes puedan verlo y comprar entradas.
+
+*Criterios de aceptación*
+* Solo un evento en estado BORRADOR puede publicarse.
+* Para publicar, el evento debe tener al menos una zona habilitada con precio vigente y capacidad ofrecida mayor a 0.
+* La capacidad ofrecida de una zona no puede superar la capacidad de la zona en la sede.
+* Deben estar definidas la fecha de inicio de venta y la de fin de venta, y la de fin no puede superar la fecha de inicio del evento.
+* Los estados del evento son BORRADOR, PUBLICADO, EN_VENTA, AGOTADO, FINALIZADO y CANCELADO.
+* El evento pasa de PUBLICADO a EN_VENTA automáticamente al llegar la fecha de inicio de venta.
+* El evento pasa a AGOTADO cuando no queda ninguna entrada disponible y vuelve a EN_VENTA si se libera inventario.
+* Al publicar quedan fijados la política de cancelación, el cargo por servicio y la comisión de plataforma que aplicarán a las reservas futuras.
+* La venta se cierra automáticamente al iniciar el evento y el evento pasa a FINALIZADO al terminar."
+"HU-04: Consultar catálogo de eventos","Story","Como cliente quiero buscar y ver eventos disponibles con su precio y disponibilidad para decidir qué comprar.
+
+*Criterios de aceptación*
+* Solo se muestran eventos en estado PUBLICADO, EN_VENTA o AGOTADO.
+* Los eventos en BORRADOR, CANCELADO o FINALIZADO no aparecen en el catálogo.
+* El cliente puede filtrar por ciudad, fecha, categoría, rango de precio y organizador.
+* Cada evento muestra por zona el precio vigente, la disponibilidad y el tipo de zona.
+* Un evento AGOTADO se muestra como agotado y ofrece unirse a la lista de espera.
+* Un evento con restricción de edad la muestra de forma visible antes de la compra.
+* El evento muestra su política de cancelación y el cargo por servicio antes de reservar.
+* Un evento en PUBLICADO muestra la fecha de inicio de venta y no permite reservar."
+"HU-05: Modificar o reprogramar un evento publicado","Story","Como organizador quiero modificar o reprogramar un evento publicado sin perjudicar a los clientes que ya compraron.
+
+*Criterios de aceptación*
+* Cambios de nombre y descripción están permitidos y no afectan reservas existentes.
+* La fecha de un evento solo puede cambiarse si el evento no ha iniciado y la nueva fecha es futura.
+* Un evento puede reprogramarse como máximo 2 veces; a partir de la tercera debe cancelarse.
+* Al reprogramar, las reservas confirmadas se mantienen con sus entradas válidas para la nueva fecha.
+* Al reprogramar, todos los clientes con reservas confirmadas deben ser notificados.
+* No se permite cambiar la sede de un evento que ya tiene reservas confirmadas.
+* La capacidad ofrecida no puede reducirse por debajo de la suma de entradas vendidas, bloqueadas y retenidas.
+* Un aumento de precio no afecta reservas ya creadas y una reducción de precio no genera devolución a quienes ya compraron.
+* No se puede modificar la política de cancelación de un evento publicado."
+"HU-06: Cancelar un evento por el organizador","Story","Como organizador quiero cancelar un evento para que los clientes reciban su dinero de vuelta.
+
+*Criterios de aceptación*
+* Solo se puede cancelar un evento en estado PUBLICADO, EN_VENTA o AGOTADO que no haya iniciado.
+* El motivo de la cancelación es obligatorio.
+* Al cancelar, la venta se cierra de inmediato y los bloqueos vigentes se liberan.
+* Las reservas en PENDIENTE_PAGO pasan a CANCELADA.
+* Las reservas CONFIRMADAS pasan a CANCELADA_POR_EVENTO y generan reembolso del 100% del monto pagado, incluido el cargo por servicio.
+* Las entradas emitidas del evento pasan a estado ANULADA.
+* La lista de espera del evento se cierra y se notifica a los clientes en ella.
+* Un evento cancelado no puede reactivarse.
+* Si el organizador cancela con menos de 7 días de anticipación, se le aplica una penalización del 5% del recaudo bruto del evento.
+* Los montos reembolsados por la cancelación se descuentan de las liquidaciones del organizador y, si ya fueron liquidados, se registran como deuda a su cargo."
+"HU-07: Definir precios por zona y fases de venta","Story","Como organizador quiero definir precios por zona y por fase de venta para segmentar la demanda.
+
+*Criterios de aceptación*
+* Cada zona publicada tiene un precio base mayor a 0 en soles (PEN) con 2 decimales.
+* Las fases de venta posibles son PREVENTA, GENERAL y ULTIMA_HORA.
+* Las fases no pueden superponerse y deben cubrir sin huecos todo el periodo de venta del evento.
+* El precio vigente es el de la fase cuyo rango contiene el momento de creación de la reserva.
+* Una vez iniciada la venta, solo se pueden modificar precios de fases futuras.
+* El precio de una entrada queda congelado al crear la reserva y no cambia después.
+* La PREVENTA puede restringirse a clientes con código de acceso.
+* Todo precio publicado incluye IGV."
+"HU-08: Aplicar tarifa dinámica por demanda","Story","Como organizador quiero que el precio de una zona suba según la demanda para maximizar el recaudo.
+
+*Criterios de aceptación*
+* La tarifa dinámica se activa por zona con un piso no menor a 0.8 y un techo no mayor a 2.0 veces el precio base.
+* El precio sube 10% cada vez que la ocupación de la zona (vendidas más bloqueadas) alcanza los umbrales de 50%, 75% y 90%.
+* Mientras el evento esté EN_VENTA el precio solo sube; si se liberan asientos, el precio no baja.
+* El precio final nunca supera el techo ni queda por debajo del piso.
+* La tarifa dinámica no se aplica durante la fase de PREVENTA.
+* El precio aplicable es el vigente al crear la reserva y queda congelado hasta que esta se confirme o expire.
+* Activar o desactivar la tarifa dinámica no afecta reservas ya creadas."
+"HU-09: Calcular cargo por servicio e impuestos","Story","Como plataforma quiero calcular de forma consistente el cargo por servicio y el IGV para que el total a pagar sea correcto y transparente.
+
+*Criterios de aceptación*
+* El cargo por servicio es el 10% del precio de cada entrada, con mínimo de S/ 2.00 y máximo de S/ 15.00 por entrada.
+* El IGV es del 18% y se aplica a las entradas y al cargo por servicio, salvo eventos exonerados, donde solo se aplica al cargo por servicio.
+* El total de una reserva se calcula como: subtotal de entradas, menos descuentos, más cargo por servicio, con el IGV incluido.
+* El desglose siempre muestra subtotal, descuentos, cargo por servicio, IGV y total.
+* Los importes se redondean a 2 decimales con redondeo half-up por línea.
+* Las cortesías no generan cargo por servicio ni impuestos.
+* El total de una reserva nunca puede ser negativo.
+* El cargo por servicio no es reembolsable cuando el cliente cancela por voluntad propia."
+"HU-10: Generar y controlar el inventario del evento","Story","Como plataforma quiero controlar el inventario por zona para no vender más entradas que la capacidad ofrecida.
+
+*Criterios de aceptación*
+* Al publicar el evento se genera el inventario: un asiento por cada lugar en zonas NUMERADAS y cupos en zonas GENERALES.
+* Cada unidad de inventario está en un único estado: DISPONIBLE, BLOQUEADO, VENDIDO, RETENIDO o INHABILITADO.
+* Las transiciones válidas son DISPONIBLE a BLOQUEADO, BLOQUEADO a DISPONIBLE, BLOQUEADO a VENDIDO, VENDIDO a DISPONIBLE por cancelación, DISPONIBLE a RETENIDO, RETENIDO a DISPONIBLE y DISPONIBLE a INHABILITADO.
+* Un asiento VENDIDO no puede pasar a INHABILITADO.
+* Disponible equivale a capacidad ofrecida menos bloqueados, vendidos, retenidos e inhabilitados.
+* Nunca se vende ni bloquea más unidades que la capacidad ofrecida (no hay overbooking).
+* En zonas GENERALES el cliente elige cantidad y no asiento, y cada cantidad bloqueada se descuenta del cupo.
+* Solo las unidades DISPONIBLES se pueden seleccionar."
+"HU-11: Bloquear asientos temporalmente","Story","Como cliente quiero bloquear asientos de un evento por un tiempo limitado para poder pagarlos sin que otro cliente me los quite.
+
+*Criterios de aceptación*
+* Solo puede bloquear un cliente en estado ACTIVO y con correo verificado.
+* Solo se puede bloquear un asiento en estado DISPONIBLE.
+* Si dos clientes intentan bloquear el mismo asiento al mismo tiempo, solo uno lo obtiene y al otro se le rechaza la solicitud.
+* El bloqueo dura 10 minutos desde su creación y no puede extenderse manualmente.
+* Un cliente puede tener bloqueados, sumando reservas pendientes y compras confirmadas del evento, hasta su límite de compra por evento (ver Aplicar límites de compra).
+* Si una solicitud incluye varios asientos, se bloquean todos o ninguno.
+* No se puede bloquear asientos de un evento que no esté EN_VENTA.
+* Un bloqueo solo puede ser utilizado por el cliente que lo creó."
+"HU-12: Expirar y liberar bloqueos","Story","Como plataforma quiero liberar los bloqueos vencidos o abandonados para que el inventario vuelva a estar disponible.
+
+*Criterios de aceptación*
+* Un bloqueo vencido nunca se considera vigente, aunque su liberación física aún no se haya ejecutado.
+* Cuando un bloqueo vence sin pago, el asiento vuelve a DISPONIBLE y la reserva asociada pasa a EXPIRADA.
+* Si al vencer el bloqueo hay un pago en proceso, el bloqueo se extiende 5 minutos, una sola vez, hasta conocer el resultado.
+* Si el pago pasa a EN_REVISION, el bloqueo se mantiene hasta que se resuelva, con un máximo de 24 horas.
+* El cliente puede liberar voluntariamente sus asientos bloqueados antes del vencimiento.
+* Si un cliente acumula 3 expiraciones seguidas sobre el mismo evento, no puede crear nuevas reservas de ese evento durante 30 minutos.
+* Cada liberación de asientos activa la revisión de la lista de espera de la zona correspondiente.
+* La liberación por expiración y la liberación voluntaria no se aplican dos veces sobre el mismo bloqueo."
+"HU-13: Retener cupos y emitir cortesías","Story","Como organizador quiero retener cupos y emitir cortesías para invitados, prensa y patrocinadores.
+
+*Criterios de aceptación*
+* El organizador puede retener hasta el 10% de la capacidad ofrecida de cada zona.
+* Los cupos RETENIDOS no están disponibles para el público.
+* Un cupo retenido puede devolverse a venta pública mientras no haya sido emitido como cortesía.
+* Los cupos retenidos no emitidos se liberan automáticamente a venta pública 72 horas antes del evento.
+* Una cortesía es una entrada con precio 0 que exige nombre y documento del beneficiario.
+* Las cortesías no generan cargo por servicio, impuestos, comisión ni liquidación.
+* Las cortesías no son reembolsables ni transferibles.
+* Las cortesías cuentan para el aforo del evento pero no para el límite de compra del cliente."
+"HU-14: Crear reserva","Story","Como cliente quiero convertir mis asientos bloqueados en una reserva para proceder al pago.
+
+*Criterios de aceptación*
+* Solo se puede crear una reserva sobre asientos bloqueados por el mismo cliente con bloqueo vigente.
+* Una reserva pertenece a un solo evento y contiene al menos 1 entrada, sin que el total del cliente en ese evento supere su límite de compra.
+* El estado inicial de toda reserva es PENDIENTE_PAGO.
+* Al crearla se calculan y congelan precios, descuentos, cargo por servicio, impuestos y total.
+* En eventos nominativos, cada entrada debe indicar nombre completo y documento del asistente al crear la reserva, y un mismo documento no puede figurar en más de una entrada del evento.
+* Cada reserva tiene un código único y legible.
+* En eventos +18 el cliente declara que todos los asistentes son mayores de edad y se informa que se verificará con documento en puerta.
+* Un organizador no puede crear reservas sobre sus propios eventos.
+* No se puede crear una reserva con un bloqueo vencido."
+"HU-15: Gestionar el ciclo de vida de la reserva","Story","Como plataforma quiero que cada reserva siga un ciclo de estados estricto para evitar estados inconsistentes.
+
+*Criterios de aceptación*
+* Los estados son PENDIENTE_PAGO, CONFIRMADA, EXPIRADA, CANCELADA, CANCELADA_POR_EVENTO y FINALIZADA.
+* Las transiciones válidas son PENDIENTE_PAGO a CONFIRMADA, EXPIRADA o CANCELADA; CONFIRMADA a CANCELADA, CANCELADA_POR_EVENTO o FINALIZADA.
+* Los estados EXPIRADA, CANCELADA, CANCELADA_POR_EVENTO y FINALIZADA son finales y no admiten nuevas transiciones.
+* Cualquier transición no listada se rechaza.
+* Cada transición registra fecha, actor y motivo.
+* Una reserva pasa a FINALIZADA automáticamente al finalizar el evento."
+"HU-16: Consultar reservas","Story","Como cliente quiero consultar mis reservas para conocer su estado, su desglose y qué puedo hacer con ellas.
+
+*Criterios de aceptación*
+* Un cliente solo puede ver sus propias reservas; consultar una ajena se trata como inexistente.
+* Una reserva muestra su estado, entradas, desglose de montos y código.
+* Una reserva PENDIENTE_PAGO muestra el tiempo restante de su bloqueo.
+* Una reserva CONFIRMADA muestra la política de cancelación aplicable y el reembolso estimado si se cancelara en ese momento.
+* El organizador ve las reservas de sus eventos con nombre del cliente y cantidad, sin datos de pago ni contacto.
+* Los datos del medio de pago solo se muestran enmascarados (últimos 4 dígitos)."
+"HU-17: Crear cupones de descuento","Story","Como administrador u organizador quiero crear cupones para incentivar compras con reglas claras.
+
+*Criterios de aceptación*
+* El código del cupón es único sin distinguir mayúsculas, alfanumérico, de 4 a 20 caracteres.
+* El tipo es PORCENTAJE (entre 1 y 100) o MONTO_FIJO (mayor a 0).
+* Tiene fecha de inicio y de fin de vigencia, con fin posterior a inicio.
+* Su alcance puede ser global, por organizador, por evento o por zona.
+* Tiene un límite total de usos y un límite de usos por cliente.
+* Puede definir un monto mínimo de compra y un tope máximo de descuento.
+* Define quién financia el descuento: PLATAFORMA u ORGANIZADOR.
+* Un organizador solo puede crear cupones para sus propios eventos y financiados por él.
+* Un cupón con usos registrados no puede eliminarse, solo desactivarse.
+* Los estados son ACTIVO, INACTIVO, AGOTADO y VENCIDO.
+* Existe la variante de cupón de primera compra, válido solo para clientes sin compras confirmadas."
+"HU-18: Aplicar un cupón a una reserva","Story","Como cliente quiero aplicar un cupón a mi reserva para obtener el descuento correspondiente.
+
+*Criterios de aceptación*
+* Solo se puede aplicar un cupón a una reserva en PENDIENTE_PAGO.
+* Se valida vigencia, estado, alcance, monto mínimo, usos totales y usos por cliente.
+* Una reserva admite un solo cupón.
+* El descuento se calcula sobre el subtotal de entradas y nunca sobre el cargo por servicio.
+* El descuento no puede superar el subtotal de entradas.
+* Los cupones de PORCENTAJE respetan su tope máximo de descuento.
+* Si dos clientes intentan usar el último uso disponible a la vez, solo uno lo obtiene.
+* El uso del cupón se reserva al aplicarlo y se consume cuando la reserva se confirma.
+* Si la reserva expira o se cancela antes del pago, el uso del cupón se devuelve.
+* Si el cliente cancela una reserva ya pagada, o hay contracargo o fraude confirmado, el uso queda consumido.
+* Si el evento se cancela, el uso se devuelve y el cupón se reactiva para ese cliente por 30 días adicionales.
+* Cuando se rechaza un cupón, se informa el motivo específico."
+"HU-19: Pagar una reserva","Story","Como cliente quiero pagar mi reserva para confirmar mis asientos.
+
+*Criterios de aceptación*
+* Solo se puede pagar una reserva en PENDIENTE_PAGO con bloqueo vigente.
+* El pago se realiza en soles (PEN) y por el monto total de la reserva en un solo cobro; no existen pagos parciales.
+* Los medios de pago admitidos son tarjeta y billetera digital.
+* Solo puede haber un intento de pago en proceso por reserva.
+* El monto a cobrar es el total congelado al crear la reserva y no cambia después.
+* La reserva pasa a CONFIRMADA únicamente cuando el pago es aprobado.
+* Un pago rechazado deja la reserva en PENDIENTE_PAGO mientras el bloqueo siga vigente.
+* Una reserva admite máximo 3 intentos de pago fallidos; al tercero pasa a CANCELADA y libera los asientos.
+* Antes de pagar, el cliente elige si requiere boleta o factura."
+"HU-20: Procesar confirmaciones de la pasarela de pago","Story","Como plataforma quiero procesar de forma segura las notificaciones de la pasarela para que cada pago se refleje correctamente una sola vez.
+
+*Criterios de aceptación*
+* Los estados de un pago son INICIADO, APROBADO, RECHAZADO, EN_REVISION, REEMBOLSADO_PARCIAL, REEMBOLSADO_TOTAL y CONTRACARGO.
+* Si la misma notificación llega más de una vez con la misma referencia, se registra un solo pago y el resultado es el mismo.
+* Si las notificaciones llegan fuera de orden, un estado final (APROBADO o RECHAZADO) nunca vuelve a INICIADO.
+* Si el monto notificado difiere del monto de la reserva, el pago pasa a EN_REVISION y la reserva no se confirma hasta su resolución.
+* Si el pago se aprueba después de vencido el bloqueo y el asiento sigue libre, la reserva se confirma.
+* Si el pago se aprueba después de vencido el bloqueo y el asiento ya fue tomado por otro cliente, la reserva no se confirma y se reembolsa el 100% al cliente.
+* Si se aprueba un pago sobre una reserva CANCELADA o EXPIRADA con asientos no recuperables, se reembolsa el 100%.
+* Si se aprueban dos pagos con distinta referencia para la misma reserva, el segundo se reembolsa automáticamente al 100%.
+* Una notificación para una reserva inexistente se registra como huérfana y su monto se reembolsa."
+"HU-21: Resolver pagos en revisión","Story","Como personal de soporte quiero resolver los pagos marcados en revisión para que ningún cliente quede cobrado sin entradas ni con asientos bloqueados indefinidamente.
+
+*Criterios de aceptación*
+* Todo pago EN_REVISION debe ser resuelto por soporte o un administrador dentro de las 24 horas siguientes a su registro.
+* Mientras el pago está EN_REVISION, la reserva sigue PENDIENTE_PAGO, sus asientos siguen BLOQUEADOS y el cliente no puede cancelarla ni pagarla de nuevo.
+* Si el monto cobrado es igual al total de la reserva y se valida el pago en la pasarela, el pago pasa a APROBADO y la reserva se confirma.
+* Si el monto cobrado es mayor al total, la reserva se confirma y se reembolsa la diferencia.
+* Si el monto cobrado es menor al total, el pago se rechaza, se reembolsa lo cobrado y la reserva sigue las reglas de pago rechazado.
+* Si al resolver a favor de confirmar los asientos ya no están disponibles, no se confirma y se reembolsa el 100% al cliente.
+* Si el pago no se resuelve en 24 horas, se reembolsa automáticamente el 100%, la reserva pasa a EXPIRADA y los asientos vuelven a DISPONIBLE.
+* Toda resolución exige motivo y queda registrada en la auditoría con el responsable.
+* Quien resuelve el pago no puede ser el mismo usuario vinculado a la reserva."
+"HU-22: Reembolsar pagos","Story","Como plataforma quiero gestionar reembolsos totales y parciales con reglas claras para devolver el dinero correcto al cliente.
+
+*Criterios de aceptación*
+* Solo se puede reembolsar un pago en estado APROBADO o REEMBOLSADO_PARCIAL.
+* El monto reembolsado acumulado nunca puede superar el monto efectivamente pagado.
+* El reembolso se devuelve al mismo medio de pago con el que se pagó.
+* Todo reembolso tiene un motivo: CANCELACION_CLIENTE, EVENTO_CANCELADO, EVENTO_REPROGRAMADO, PAGO_DUPLICADO, ASIENTO_NO_DISPONIBLE o AJUSTE_ADMIN.
+* El cargo por servicio solo se devuelve en los motivos EVENTO_CANCELADO, EVENTO_REPROGRAMADO, PAGO_DUPLICADO y ASIENTO_NO_DISPONIBLE.
+* Los estados del reembolso son SOLICITADO, EN_PROCESO, COMPLETADO y FALLIDO.
+* Un reembolso fallido se reintenta hasta 3 veces en 72 horas; después pasa a revisión manual.
+* Un mismo origen (cancelación o evento) genera un solo reembolso.
+* Los reembolsos por AJUSTE_ADMIN de hasta S/ 200 pueden ser aprobados por soporte; los mayores requieren administrador, y los mayores a S/ 500 requieren aprobación de un segundo administrador."
+"HU-23: Emitir comprobantes de pago","Story","Como cliente quiero recibir mi comprobante electrónico para respaldar mi compra.
+
+*Criterios de aceptación*
+* Al confirmarse el pago se emite un comprobante electrónico: boleta (con DNI o documento) o factura (con RUC).
+* La factura requiere RUC válido de 11 dígitos y razón social.
+* Una vez emitido, el comprobante no puede cambiarse de boleta a factura ni viceversa.
+* La numeración es correlativa por serie, sin saltos ni repeticiones.
+* El comprobante desglosa valor de entradas, cargo por servicio, descuentos e IGV.
+* Un comprobante emitido no se edita ni se elimina; solo se anula mediante nota de crédito.
+* Todo reembolso genera una nota de crédito que referencia el comprobante original por el monto reembolsado.
+* Las cortesías no generan comprobante de venta.
+* La emisión del comprobante es idempotente: una misma confirmación de pago genera un solo comprobante."
+"HU-24: Gestionar contracargos","Story","Como plataforma quiero gestionar los contracargos para proteger los ingresos y aplicar los costos a quien corresponde.
+
+*Criterios de aceptación*
+* Un contracargo recibido sobre un pago APROBADO cambia el pago a estado CONTRACARGO.
+* Si el evento aún no ocurrió, las entradas se anulan, la reserva pasa a CANCELADA y los asientos vuelven a DISPONIBLE.
+* Si el evento ya ocurrió y las entradas fueron USADAS, se impugna presentando como evidencia el registro de acceso.
+* La evidencia debe presentarse dentro de los 7 días siguientes a la notificación del contracargo.
+* Un contracargo perdido se descuenta de las liquidaciones del organizador del evento.
+* Un contracargo ganado restituye el monto y deja el pago en su estado APROBADO.
+* Dos contracargos perdidos de un mismo cliente causan el bloqueo de su cuenta.
+* Un pago con contracargo no puede reembolsarse además de lo disputado."
+"HU-25: Conciliar pagos con la pasarela","Story","Como administrador quiero conciliar diariamente los pagos con la pasarela para detectar y corregir diferencias.
+
+*Criterios de aceptación*
+* Cada día se compara el total de pagos aprobados del sistema contra el reporte de la pasarela.
+* Los tipos de discrepancia son: pago en pasarela sin registro, registro sin pago en pasarela y monto distinto.
+* Un pago en pasarela sin registro se reembolsa, salvo que pueda asociarse a una reserva confirmable.
+* Un registro aprobado sin pago en pasarela suspende las entradas de esa reserva y la pasa a revisión.
+* Cada discrepancia queda en estado ABIERTA hasta que un responsable la resuelva con un motivo.
+* Una discrepancia abierta por más de 3 días se escala a un administrador.
+* Los pagos ya conciliados solo se corrigen mediante ajustes registrados, nunca por edición directa."
+"HU-26: Cancelar una reserva confirmada","Story","Como cliente quiero cancelar mi reserva confirmada para recuperar total o parcialmente mi dinero según la política vigente.
+
+*Criterios de aceptación*
+* Solo se puede cancelar una reserva CONFIRMADA cuyo evento no haya iniciado y sin entradas USADAS.
+* La cancelación siempre es sobre la reserva completa; no se cancelan entradas sueltas.
+* Se aplica la política de cancelación fijada en el evento al publicarse.
+* Política ESTANDAR: más de 48 horas, 100% del monto pagado menos el cargo por servicio; entre 24 y 48 horas, 50% del monto pagado; menos de 24 horas, sin reembolso.
+* Política FLEXIBLE: más de 24 horas, 100% del monto pagado menos el cargo por servicio; menos de 24 horas, 50% del monto pagado.
+* Política NO_REEMBOLSABLE: no corresponde reembolso en ningún caso, salvo cancelación o reprogramación del evento.
+* El monto reembolsado nunca puede superar el monto efectivamente pagado.
+* Una reserva ya cancelada no puede cancelarse ni reembolsarse de nuevo.
+* Las entradas de la reserva pasan a ANULADA y los asientos vuelven a DISPONIBLE.
+* Una reserva que tenga alguna entrada transferida ya no puede cancelarse por voluntad del cliente."
+"HU-27: Cancelar una reserva pendiente de pago","Story","Como cliente quiero cancelar una reserva que todavía no pagué para liberar los asientos.
+
+*Criterios de aceptación*
+* Solo se puede cancelar una reserva en PENDIENTE_PAGO.
+* No se puede cancelar mientras exista un pago en proceso o EN_REVISION hasta conocer su resultado.
+* Al cancelar, la reserva pasa a CANCELADA y los asientos vuelven a DISPONIBLE.
+* El uso del cupón aplicado se devuelve.
+* No corresponde reembolso porque no hubo cobro.
+* Una cancelación voluntaria no cuenta como expiración para la regla de 3 expiraciones seguidas."
+"HU-28: Solicitar reembolso por reprogramación del evento","Story","Como cliente quiero poder pedir mi reembolso cuando se reprograma un evento al que no puedo asistir.
+
+*Criterios de aceptación*
+* Solo pueden solicitarlo clientes con reservas CONFIRMADAS del evento reprogramado.
+* El plazo es de 7 días desde la notificación de reprogramación o hasta 24 horas antes de la nueva fecha, lo que ocurra primero.
+* El reembolso es del 100% del monto pagado, incluido el cargo por servicio.
+* Pasado el plazo, la reserva se mantiene válida para la nueva fecha y rige la política de cancelación normal.
+* Cada reserva puede ejercer este derecho una sola vez.
+* Al reembolsar, las entradas pasan a ANULADA y los asientos vuelven a DISPONIBLE.
+* Una reserva que tenga alguna entrada transferida no puede solicitar este reembolso."
+"HU-29: Registrar y verificar organizadores","Story","Como organizador quiero registrarme y ser verificado para poder vender entradas en la plataforma.
+
+*Criterios de aceptación*
+* El registro exige RUC válido y único, razón social y una cuenta bancaria cuyo titular coincida con el RUC.
+* Los estados del organizador son PENDIENTE_VERIFICACION, VERIFICADO, SUSPENDIDO y BAJA.
+* Solo un administrador puede pasar a un organizador a VERIFICADO tras revisar sus documentos.
+* Solo un organizador VERIFICADO puede crear y publicar eventos.
+* Un organizador SUSPENDIDO no puede crear nuevos eventos, y sus eventos en venta continúan hasta finalizar.
+* La baja solo procede si no tiene eventos futuros, saldos pendientes ni deudas.
+* Cambiar la cuenta bancaria requiere nueva verificación y retiene sus liquidaciones durante 72 horas."
+"HU-30: Definir la comisión de plataforma","Story","Como administrador quiero definir la comisión por organizador para calcular correctamente los ingresos de la plataforma.
+
+*Criterios de aceptación*
+* La comisión es un porcentaje entre 3% y 15% definido por organizador.
+* Se aplica sobre el valor de las entradas vendidas, neto de los descuentos financiados por el organizador.
+* La comisión queda fijada al publicar el evento y no cambia para ese evento.
+* No se cobra comisión sobre el cargo por servicio ni sobre el IGV.
+* Los descuentos financiados por la plataforma no reducen la base de comisión.
+* Si el cliente cancela y se reembolsa, la comisión se reduce proporcionalmente al valor de entradas reembolsado.
+* Si el evento se cancela, no se cobra comisión.
+* Las cortesías no generan comisión."
+"HU-31: Liquidar al organizador","Story","Como organizador quiero recibir la liquidación de mis ventas para cobrar lo que me corresponde.
+
+*Criterios de aceptación*
+* La liquidación se genera por evento 3 días hábiles después de que el evento finaliza.
+* Solo cuentan las reservas en estado FINALIZADA.
+* Los montos vinculados a pagos EN_REVISION, contracargos abiertos y discrepancias de conciliación ABIERTAS del evento se retienen y se liquidan en cuanto se resuelven.
+* El monto es: ventas netas, menos comisión, menos reembolsos y contracargos a su cargo, menos penalizaciones, menos deudas pendientes.
+* Si el resultado es negativo, se registra como deuda y se compensa en liquidaciones futuras.
+* Los estados de la liquidación son GENERADA, APROBADA, PAGADA y OBSERVADA.
+* Una liquidación PAGADA es inmutable; cualquier ajuste posterior se aplica en la siguiente liquidación.
+* Un evento tiene una sola liquidación final.
+* La liquidación se paga únicamente a la cuenta bancaria verificada del organizador.
+* Una liquidación OBSERVADA no se paga hasta resolver la observación."
+"HU-32: Registrar clientes","Story","Como cliente quiero crear mi cuenta para poder comprar entradas.
+
+*Criterios de aceptación*
+* El correo es único sin distinguir mayúsculas y debe verificarse antes de poder bloquear o comprar.
+* Solo pueden registrarse personas mayores de 18 años.
+* Los estados de un cliente son PENDIENTE_VERIFICACION, ACTIVO, BLOQUEADO y ELIMINADO.
+* Un cliente que no verifica su correo en 24 horas pierde su registro.
+* Para emitir boleta se requiere documento de identidad válido (DNI, carné de extranjería o pasaporte).
+* Una cuenta no puede eliminarse si tiene reservas pendientes o entradas válidas de eventos futuros.
+* Al eliminar una cuenta se anonimizan los datos personales y se conservan las transacciones por obligación tributaria."
+"HU-33: Aplicar límites de compra","Story","Como plataforma quiero limitar las compras por cliente para evitar acaparamiento y reventa.
+
+*Criterios de aceptación*
+* El límite de compra por evento es único y rige todas las operaciones: 6 entradas por cliente por defecto, ajustable por el organizador entre 1 y 10.
+* El límite se aplica al total del cliente en el evento, sumando asientos bloqueados, reservas en PENDIENTE_PAGO y reservas CONFIRMADAS, y no por reserva individual.
+* Durante la fase de PREVENTA el límite efectivo es el menor entre el límite del evento y 4 entradas.
+* El organizador no puede reducir el límite de un evento a un valor menor al que ya tienen clientes con entradas compradas; el nuevo valor solo afecta compras futuras.
+* Un cliente puede tener como máximo 3 reservas en PENDIENTE_PAGO simultáneas entre todos los eventos.
+* Las entradas canceladas dejan de contar para el límite.
+* Las entradas recibidas por transferencia no cuentan para el límite del receptor.
+* Las cortesías no cuentan para el límite de compra."
+"HU-34: Suspender y bloquear clientes","Story","Como plataforma quiero bloquear clientes que incumplen las reglas para proteger a otros clientes y a los organizadores.
+
+*Criterios de aceptación*
+* Son causales de bloqueo: 2 contracargos perdidos, 5 expiraciones de bloqueo en 24 horas, reventa detectada y fraude confirmado.
+* El bloqueo puede ser temporal (24 horas) o permanente según la causal.
+* Un cliente BLOQUEADO no puede bloquear asientos ni crear reservas.
+* Al bloquear a un cliente, sus reservas PENDIENTE_PAGO pasan a CANCELADA y se liberan sus asientos.
+* Sus reservas CONFIRMADAS se mantienen, salvo fraude confirmado, en cuyo caso se anulan las entradas y se reembolsa lo que corresponda.
+* El motivo del bloqueo es obligatorio y se informa al cliente.
+* El cliente puede apelar una sola vez dentro de los 15 días siguientes y un administrador resuelve la apelación.
+* Solo un administrador puede desbloquear a un cliente, con motivo obligatorio."
+"HU-35: Gestionar roles y permisos de negocio","Story","Como plataforma quiero que cada rol solo pueda realizar las operaciones que le corresponden para proteger la integridad del negocio.
+
+*Criterios de aceptación*
+* Los roles son CLIENTE, ORGANIZADOR, STAFF_PUERTA, SOPORTE y ADMIN.
+* El CLIENTE solo opera sobre sus propias reservas y entradas.
+* El ORGANIZADOR solo opera sobre sus propios eventos y no ve datos personales completos de los clientes.
+* El STAFF_PUERTA solo valida entradas del evento al que está asignado y entre 2 horas antes del inicio y 2 horas después del fin.
+* SOPORTE puede consultar reservas y solicitar o aprobar ajustes de reembolso de hasta S/ 200.
+* ADMIN puede aprobar organizadores, bloquear clientes y aprobar reembolsos de cualquier monto.
+* El organizador asigna personal con rol STAFF_PUERTA a sus eventos; sin asignación, el personal no puede validar entradas de ese evento.
+* Un usuario no puede aprobar una solicitud que él mismo creó.
+* Un usuario con rol ORGANIZADOR no puede comprar entradas de sus propios eventos."
+"HU-36: Emitir entradas","Story","Como cliente quiero recibir mis entradas una vez confirmada la reserva para poder asistir al evento.
+
+*Criterios de aceptación*
+* Las entradas se emiten únicamente cuando la reserva pasa a CONFIRMADA.
+* Se emite una entrada por cada asiento o cupo de la reserva.
+* Cada entrada tiene un código único no predecible.
+* Cada entrada está asociada a evento, zona, asiento (si aplica) y titular.
+* En eventos nominativos la entrada se emite a nombre y documento del asistente registrado en la reserva.
+* Los estados de una entrada son VALIDA, USADA y ANULADA.
+* La emisión es idempotente: una confirmación repetida no duplica entradas.
+* Una entrada es válida hasta la fecha de fin del evento.
+* En eventos nominativos el nombre y documento del asistente solo pueden corregirse una vez por entrada hasta 72 horas antes del evento, anulando la entrada anterior y emitiendo una nueva con código distinto.
+* Las reservas EXPIRADA o CANCELADA nunca tienen entradas VALIDAS."
+"HU-37: Validar entradas en puerta","Story","Como personal de puerta quiero validar entradas para permitir el ingreso solo a quienes tienen una entrada legítima.
+
+*Criterios de aceptación*
+* Solo se acepta una entrada en estado VALIDA que pertenezca al evento que se está validando.
+* La validación solo se permite dentro de la ventana de ingreso: desde la apertura de puertas hasta el fin del evento.
+* El primer escaneo exitoso cambia la entrada a USADA y registra fecha, hora, punto de acceso y personal.
+* Un segundo escaneo se rechaza e indica la fecha y hora del primer uso.
+* Una entrada ANULADA se rechaza.
+* Si dos personas escanean la misma entrada simultáneamente, solo una validación es aceptada.
+* En eventos nominativos el documento presentado debe coincidir con el de la entrada; si no coincide, se rechaza el ingreso y no corresponde reembolso.
+* Una entrada solo se acepta en los puntos de acceso habilitados para su zona.
+* En eventos +18, el ingreso requiere verificar el documento del asistente; si no cumple la edad, se le niega el ingreso y no corresponde reembolso.
+* Si el evento permite reingreso, la entrada USADA puede reingresar hasta el número de veces definido; si no, no."
+"HU-38: Transferir una entrada","Story","Como cliente quiero transferir una entrada a otra persona para que pueda asistir en mi lugar.
+
+*Criterios de aceptación*
+* Solo se pueden transferir entradas VALIDAS de reservas CONFIRMADAS, hasta 24 horas antes del evento.
+* El destinatario debe ser un cliente registrado, ACTIVO y con correo verificado.
+* Al transferir, la entrada anterior pasa a ANULADA y se emite una nueva con código distinto.
+* Una entrada puede transferirse como máximo 2 veces.
+* No son transferibles las cortesías ni las entradas de eventos nominativos.
+* La transferencia es gratuita; no existe cobro entre cliente y destinatario dentro de la plataforma.
+* Transferir una entrada impide al comprador cancelar la reserva por voluntad propia; solo procede reembolso por cancelación del evento."
+"HU-39: Unirse a la lista de espera","Story","Como cliente quiero ponerme en lista de espera cuando una zona está agotada para tener la oportunidad de comprar si se liberan entradas.
+
+*Criterios de aceptación*
+* Solo se puede unir a la lista de espera de una zona con disponibilidad en cero en un evento EN_VENTA o AGOTADO.
+* El cliente solicita entre 1 y 4 entradas, sin exceder su límite de compra restante en el evento.
+* Un cliente solo puede tener una solicitud activa por zona.
+* El orden de la lista es estrictamente por fecha y hora de registro.
+* Solo puede unirse un cliente ACTIVO que cumpla sus límites de compra para ese evento.
+* El cliente puede salir de la lista en cualquier momento.
+* La lista se cierra al iniciar o cancelarse el evento."
+"HU-40: Ofrecer cupos liberados a la lista de espera","Story","Como cliente en lista de espera quiero recibir una oferta cuando se libere inventario para poder comprar con prioridad.
+
+*Criterios de aceptación*
+* Al liberarse inventario en una zona con lista, se ofrece al primer cliente cuya cantidad solicitada cabe en lo disponible; si no cabe, se pasa al siguiente sin que el primero pierda su posición.
+* La oferta bloquea los asientos a nombre del cliente durante 15 minutos.
+* Mientras la oferta esté activa, esos asientos no están disponibles para el público.
+* Si el cliente no paga en el plazo, la oferta expira, pierde su lugar y se ofrece al siguiente.
+* Si el cliente rechaza la oferta, sale de la lista.
+* No se ofrece a clientes que ya no cumplen su límite de compra o están bloqueados.
+* Si no quedan solicitudes en la lista, el inventario vuelve a venta pública.
+* Una oferta aceptada genera una reserva PENDIENTE_PAGO con las mismas reglas de precio y pago."
+"HU-41: Registrar auditoría de operaciones de negocio","Story","Como administrador quiero un registro inmutable de las operaciones críticas para poder investigar incidentes y cumplir obligaciones.
+
+*Criterios de aceptación*
+* Se registra quién, qué, cuándo, valor anterior, valor nuevo y motivo en: cambios de estado de reservas, pagos, reembolsos, cambios de precio, cupones, roles, bloqueos de clientes y liquidaciones.
+* Los registros de auditoría no se pueden editar ni eliminar.
+* Las acciones automáticas se registran con actor SISTEMA.
+* Los registros se conservan 5 años.
+* No se almacenan datos sensibles de pago en la auditoría.
+* Un administrador puede consultar la auditoría por cliente, reserva, evento, organizador y rango de fechas."
+"HU-42: Generar reporte de ventas por evento","Story","Como organizador quiero ver las ventas de mi evento para conocer su recaudo y rendimiento.
+
+*Criterios de aceptación*
+* Muestra ventas brutas, descuentos, cargo por servicio, IGV, comisión y neto.
+* Solo cuenta reservas CONFIRMADAS y FINALIZADAS.
+* Los reembolsos se muestran por separado y se restan del neto.
+* Se desglosa por zona, fase de venta y cupón.
+* El organizador solo accede a reportes de sus propios eventos.
+* Las cifras del reporte coinciden con los comprobantes y con la liquidación.
+* Todas las fechas se muestran en la zona horaria de Lima."
+"HU-43: Enviar notificaciones de negocio","Story","Como cliente quiero recibir avisos sobre mis reservas y eventos para no perder información importante.
+
+*Criterios de aceptación*
+* Se notifica la confirmación de la reserva con sus entradas.
+* Se notifica la cancelación o reprogramación de un evento a todos los clientes con reservas confirmadas.
+* Se notifica el reembolso emitido con su monto y su motivo.
+* Se envía un recordatorio 24 horas antes del evento.
+* Se avisa cuando faltan 2 minutos para vencer un bloqueo.
+* Se notifica la oferta de la lista de espera con su plazo.
+* Las notificaciones transaccionales (confirmación, cancelación, reembolso) no pueden ser desactivadas por el cliente.
+* Cada hecho de negocio genera una sola notificación al mismo destinatario."

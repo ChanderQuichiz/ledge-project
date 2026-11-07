@@ -1,0 +1,289 @@
+Project catalogo {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio CATALOGO. HU-01 a HU-09, HU-29, HU-30 y OpenAPI catalogo.
+  Importes en soles (PEN), decimal(12,2). Referencias a otros servicios: logicas (sin FK).
+  '''
+}
+
+Enum estado_organizador {
+  PENDIENTE_VERIFICACION
+  VERIFICADO
+  SUSPENDIDO
+  BAJA
+}
+
+Enum tipo_zona {
+  NUMERADA
+  GENERAL
+}
+
+Enum motivo_inhabilitacion_asiento {
+  MANTENIMIENTO
+  VISIBILIDAD_REDUCIDA
+}
+
+Enum estado_evento {
+  BORRADOR
+  PUBLICADO
+  EN_VENTA
+  AGOTADO
+  FINALIZADO
+  CANCELADO
+}
+
+Enum restriccion_edad {
+  TODO_PUBLICO
+  "+14"
+  "+18"
+}
+
+Enum politica_cancelacion {
+  ESTANDAR
+  FLEXIBLE
+  NO_REEMBOLSABLE
+}
+
+Enum fase_venta {
+  PREVENTA
+  GENERAL
+  ULTIMA_HORA
+}
+
+Table organizadores {
+  id uuid [pk]
+  ruc char(11) [not null, unique, note: 'RUC valido y unico (11 digitos)']
+  razon_social varchar(200) [not null]
+  estado estado_organizador [not null, default: 'PENDIENTE_VERIFICACION']
+  porcentaje_comision decimal(4,2) [not null, note: 'Definido por el administrador (HU-30). Se copia al evento al publicar']
+  verificado_por uuid [note: 'Solo un ADMIN verifica']
+  verificado_en timestamptz
+  creado_en timestamptz [not null, default: `now()`]
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  checks {
+    `porcentaje_comision between 3 and 15` [name: 'ck_organizadores_comision']
+    `ruc ~ '^[0-9]{11}$'` [name: 'ck_organizadores_ruc']
+  }
+}
+
+Table cuentas_bancarias_organizador {
+  id uuid [pk]
+  organizador_id uuid [not null, ref: > organizadores.id]
+  banco varchar(80) [not null]
+  cci varchar(20) [not null, note: 'Codigo de cuenta interbancario']
+  titular varchar(200) [not null, note: 'Debe coincidir con el RUC del organizador']
+  verificada boolean [not null, default: false]
+  verificada_en timestamptz
+  vigente boolean [not null, default: true]
+  retenida_hasta timestamptz [note: 'Si la cuenta cambio: 72 horas de retencion de liquidaciones (HU-29)']
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    organizador_id [name: 'ix_cuentas_org', note: 'Crear ademas un indice UNICO PARCIAL (organizador_id) WHERE vigente: una sola cuenta vigente por organizador']
+  }
+
+  Note: 'Respalda CuentaLiquidacion (cuenta{banco,cci,titular}, cuentaVerificada, retenidaHasta). Al cambiar la cuenta la anterior queda vigente=false.'
+}
+
+Table sedes {
+  id uuid [pk]
+  nombre varchar(150) [not null]
+  direccion varchar(250) [not null]
+  ciudad varchar(100) [not null]
+  aforo_maximo_legal integer [not null]
+  activa boolean [not null, default: true, note: 'Solo se puede desactivar si no tiene ventas ni eventos futuros publicados; no se elimina con eventos futuros publicados']
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    ciudad
+  }
+
+  checks {
+    `aforo_maximo_legal > 0` [name: 'ck_sedes_aforo']
+  }
+}
+
+Table zonas_sede {
+  id uuid [pk]
+  sede_id uuid [not null, ref: > sedes.id]
+  nombre varchar(100) [not null]
+  tipo tipo_zona [not null]
+  capacidad integer [not null, note: 'La suma de capacidades de las zonas de la sede no supera su aforo maximo legal']
+  activa boolean [not null, default: true]
+
+  indexes {
+    (sede_id, nombre) [unique]
+  }
+
+  checks {
+    `capacidad > 0` [name: 'ck_zonas_capacidad']
+  }
+}
+
+Table asientos_zona {
+  id uuid [pk, note: 'Es el asientoId usado en Inventario']
+  zona_id uuid [not null, ref: > zonas_sede.id, note: 'Solo zonas NUMERADAS']
+  fila varchar(10) [not null]
+  numero integer [not null]
+  accesible boolean [not null, default: false, note: 'Asiento accesible (venta restringida hasta 72 h antes del evento)']
+  habilitado boolean [not null, default: true]
+  motivo_inhabilitacion motivo_inhabilitacion_asiento [note: 'Un asiento inhabilitado no se vende ni bloquea']
+
+  indexes {
+    (zona_id, fila, numero) [unique]
+  }
+}
+
+Table puntos_acceso_sede {
+  id uuid [pk, note: 'puntoAccesoId']
+  sede_id uuid [not null, ref: > sedes.id]
+  nombre varchar(100) [not null]
+
+  indexes {
+    (sede_id, nombre) [unique]
+  }
+}
+
+Table puntos_acceso_zonas {
+  punto_acceso_id uuid [not null, ref: > puntos_acceso_sede.id]
+  zona_id uuid [not null, ref: > zonas_sede.id]
+
+  indexes {
+    (punto_acceso_id, zona_id) [pk]
+  }
+
+  Note: 'Zonas a las que da ingreso cada punto de acceso. Respalda ZonaEvento.puntosAcceso.'
+}
+
+Table eventos {
+  id uuid [pk]
+  organizador_id uuid [not null, ref: > organizadores.id]
+  sede_id uuid [not null, ref: > sedes.id]
+  nombre varchar(200) [not null]
+  descripcion text
+  categoria varchar(60) [not null]
+  restriccion_edad restriccion_edad [not null, default: 'TODO_PUBLICO']
+  politica_cancelacion politica_cancelacion [not null, note: 'Fijada al publicar; no cambia despues']
+  permite_reingreso boolean [not null, default: false]
+  max_reingresos integer [note: 'Solo si permite_reingreso']
+  es_nominativo boolean [not null, default: false]
+  es_exonerado boolean [not null, default: false, note: 'eventoExonerado: IGV solo sobre el cargo por servicio']
+  limite_compra_por_cliente smallint [not null, default: 6]
+  estado estado_evento [not null, default: 'BORRADOR']
+  fecha_inicio timestamptz [not null, note: 'Al crear, al menos 72 h posterior a creado_en']
+  fecha_fin timestamptz [not null]
+  apertura_puertas timestamptz [not null, note: 'No posterior a fecha_inicio']
+  inicio_venta timestamptz
+  fin_venta timestamptz [note: 'No supera fecha_inicio']
+  cargo_servicio_porcentaje decimal(5,2) [not null, default: 10.00, note: 'Fijado al publicar']
+  cargo_servicio_minimo decimal(12,2) [not null, default: 2.00]
+  cargo_servicio_maximo decimal(12,2) [not null, default: 15.00]
+  porcentaje_comision decimal(4,2) [note: 'Fijado al publicar (copiado de organizadores.porcentaje_comision). No se cobra si el evento se cancela']
+  numero_reprogramaciones smallint [not null, default: 0]
+  publicado_en timestamptz
+  cancelado_en timestamptz
+  motivo_cancelacion text [note: 'Obligatorio al cancelar']
+  penalizacion_cancelacion_porcentaje decimal(4,2) [not null, default: 0, note: '5 si cancelo con menos de 7 dias de anticipacion; 0 en otro caso']
+  creado_por uuid [not null, note: 'Ref logica identidad.usuarios']
+  creado_en timestamptz [not null, default: `now()`]
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (sede_id, fecha_inicio, fecha_fin) [name: 'ix_eventos_sede_horario', note: 'Sin solapes por sede, con 2 h de montaje antes y 2 h de desmontaje despues (restriccion de exclusion o validacion transaccional)']
+    (organizador_id, estado)
+  }
+
+  checks {
+    `fecha_fin > fecha_inicio` [name: 'ck_eventos_fechas']
+    `apertura_puertas <= fecha_inicio` [name: 'ck_eventos_apertura']
+    `limite_compra_por_cliente between 1 and 10` [name: 'ck_eventos_limite']
+    `numero_reprogramaciones between 0 and 2` [name: 'ck_eventos_reprogramaciones']
+    `porcentaje_comision is null or porcentaje_comision between 3 and 15` [name: 'ck_eventos_comision']
+    `penalizacion_cancelacion_porcentaje between 0 and 5` [name: 'ck_eventos_penalizacion']
+    `(permite_reingreso and max_reingresos >= 1) or (not permite_reingreso and max_reingresos is null)` [name: 'ck_eventos_reingreso']
+  }
+}
+
+Table reprogramaciones_evento {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos.id]
+  numero smallint [not null, note: '1 o 2 (maximo 2 reprogramaciones)']
+  fecha_anterior timestamptz [not null, note: 'Inicio anterior. ReglasEvento.reprogramacion.fechaAnterior']
+  fecha_nueva timestamptz [not null, note: 'Inicio nuevo']
+  fecha_fin_anterior timestamptz [not null]
+  fecha_fin_nueva timestamptz [not null]
+  notificada_en timestamptz [not null, note: 'Inicio del plazo de 7 dias para pedir reembolso']
+  creado_por uuid [not null]
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (evento_id, numero) [unique]
+  }
+
+  checks {
+    `numero between 1 and 2` [name: 'ck_reprog_numero']
+  }
+}
+
+Table evento_zonas {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos.id]
+  zona_id uuid [not null, ref: > zonas_sede.id]
+  habilitada boolean [not null, default: true]
+  capacidad_ofrecida integer [not null, note: 'No supera la capacidad de la zona en la sede']
+  precio_base decimal(12,2) [not null, note: 'Incluye IGV']
+  tarifa_dinamica_activa boolean [not null, default: false]
+  piso_multiplicador decimal(3,2) [note: 'Piso, no menor a 0.8 veces el precio base']
+  techo_multiplicador decimal(3,2) [note: 'Techo, no mayor a 2.0 veces el precio base']
+  nivel_umbral_alcanzado smallint [not null, default: 0, note: 'Umbrales 50%, 75%, 90% ya alcanzados (0 a 3). Solo sube mientras el evento esta EN_VENTA']
+  unidades_ocupadas integer [not null, default: 0, note: 'Vendidas + bloqueadas, mantenido con los eventos de Inventario (sin llamarlo)']
+  ocupacion_actualizada_en timestamptz
+
+  indexes {
+    (evento_id, zona_id) [unique]
+  }
+
+  checks {
+    `capacidad_ofrecida > 0` [name: 'ck_evento_zonas_capacidad']
+    `precio_base > 0` [name: 'ck_evento_zonas_precio']
+    `nivel_umbral_alcanzado between 0 and 3` [name: 'ck_evento_zonas_nivel']
+    `(not tarifa_dinamica_activa) or (piso_multiplicador >= 0.8 and techo_multiplicador <= 2.0 and piso_multiplicador <= techo_multiplicador)` [name: 'ck_evento_zonas_tarifa']
+  }
+
+  Note: 'Respalda ZonaEvento.capacidadOfrecida y la tarifa dinamica de la cotizacion. Habilitada=false produce ZONA_NO_HABILITADA.'
+}
+
+Table fases_venta {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos.id]
+  fase fase_venta [not null]
+  inicia_en timestamptz [not null]
+  termina_en timestamptz [not null, note: 'Las fases no se superponen y cubren sin huecos el periodo de venta']
+  acceso_restringido boolean [not null, default: false, note: 'Solo PREVENTA puede restringirse con codigo de acceso']
+  codigo_acceso_hash varchar(128)
+
+  indexes {
+    (evento_id, fase) [unique]
+  }
+
+  checks {
+    `termina_en > inicia_en` [name: 'ck_fases_rango']
+    `(not acceso_restringido) or (fase = 'PREVENTA' and codigo_acceso_hash is not null)` [name: 'ck_fases_acceso']
+  }
+}
+
+Table precios_zona_fase {
+  id uuid [pk]
+  evento_zona_id uuid [not null, ref: > evento_zonas.id]
+  fase_venta_id uuid [not null, ref: > fases_venta.id]
+  precio decimal(12,2) [not null, note: 'Precio de la zona en esa fase, incluye IGV. Solo editable en fases futuras una vez iniciada la venta']
+
+  indexes {
+    (evento_zona_id, fase_venta_id) [unique]
+  }
+
+  checks {
+    `precio > 0` [name: 'ck_precios_fase']
+  }
+}

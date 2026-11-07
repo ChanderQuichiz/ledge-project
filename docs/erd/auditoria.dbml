@@ -1,0 +1,58 @@
+Project auditoria {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Servicio AUDITORIA. HU-41. Registro inmutable alimentado por eventos de los demas servicios.
+  Los permisos de la BD deben impedir UPDATE y DELETE sobre registros_auditoria.
+  '''
+}
+
+Enum tipo_actor_auditoria {
+  CLIENTE
+  ORGANIZADOR
+  SOPORTE
+  ADMIN
+  SISTEMA
+}
+
+Enum entidad_auditada {
+  RESERVA
+  PAGO
+  REEMBOLSO
+  PRECIO
+  CUPON
+  ROL
+  BLOQUEO_CLIENTE
+  LIQUIDACION
+}
+
+Table registros_auditoria {
+  id uuid [pk]
+  ocurrido_en timestamptz [not null, default: `now()`, note: 'Cuando']
+  actor_tipo tipo_actor_auditoria [not null, note: 'Las acciones automaticas se registran como SISTEMA']
+  actor_id uuid [note: 'Quien. NULL si SISTEMA']
+  actor_rol varchar(20)
+  accion varchar(60) [not null, note: 'Que']
+  entidad entidad_auditada [not null]
+  entidad_id uuid [not null]
+  cliente_id uuid [note: 'Filtro de consulta por cliente']
+  reserva_id uuid [note: 'Filtro de consulta por reserva']
+  evento_id uuid [note: 'Filtro de consulta por evento']
+  organizador_id uuid [note: 'Filtro de consulta por organizador']
+  valor_anterior jsonb
+  valor_nuevo jsonb
+  motivo varchar(300)
+  servicio_origen varchar(30) [not null]
+  correlation_id varchar(100)
+  conservar_hasta timestamptz [not null, note: 'ocurrido_en + 5 anios']
+
+  indexes {
+    (cliente_id, ocurrido_en)
+    (reserva_id, ocurrido_en)
+    (evento_id, ocurrido_en)
+    (organizador_id, ocurrido_en)
+    (entidad, entidad_id)
+    ocurrido_en
+  }
+
+  Note: 'No se almacenan datos sensibles de pago. Registros no editables ni eliminables; se conservan 5 anios.'
+}

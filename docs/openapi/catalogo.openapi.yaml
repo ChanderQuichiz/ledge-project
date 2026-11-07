@@ -1,0 +1,2514 @@
+openapi: 3.0.3
+info:
+  title: Catalogo - API (frontend y otros microservicios)
+  version: 1.0.0
+  description: 'Cubre las HU de Catalogo que se exponen por HTTP: sedes y zonas (HU-01), eventos (HU-02 a HU-06),
+    precios, tarifa dinamica y cotizacion (HU-07 a HU-09), catalogo publico (HU-04), organizadores (HU-29) y comision
+    (HU-30). Las rutas /api/v1 las consume el frontend por el gateway y las /internal las consumen otros microservicios.'
+servers:
+- url: https://api.example.com
+  description: API Gateway (rutas /api/v1, consumidas por el frontend)
+- url: http://catalogo:8080
+  description: Red interna (rutas /internal, consumidas por otros microservicios)
+tags:
+- name: Eventos
+- name: Zonas
+- name: Organizadores
+- name: Sedes
+- name: Catalogo
+paths:
+  /internal/eventos/{eventoId}/cotizaciones:
+    post:
+      tags:
+      - Eventos
+      operationId: cotizarEntradas
+      summary: Calcular precio, cargo por servicio e IGV de una compra
+      description: |
+        Reservas lo llama al crear la reserva. Catalogo aplica la fase de venta vigente,
+        la tarifa dinamica de la zona, el cargo por servicio (10% por entrada, minimo S/ 2.00
+        y maximo S/ 15.00) y el IGV (18%, incluido en el precio). El descuento lo calcula
+        Reservas con los cupones y se envia ya como monto para obtener el desglose final.
+        Reservas congela el resultado en la reserva.
+      x-hu:
+      - HU-07
+      - HU-08
+      - HU-09
+      x-llamado-por:
+      - reservas
+      parameters:
+      - $ref: '#/components/parameters/EventoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CotizacionSolicitud'
+      responses:
+        '200':
+          description: Cotizacion calculada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CotizacionRespuesta'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '403':
+          description: |
+            La fase es PREVENTA con acceso restringido y el codigo de acceso falta o es invalido
+            (codigo CODIGO_PREVENTA_INVALIDO).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+        '409':
+          description: El evento no esta EN_VENTA (codigo EVENTO_NO_EN_VENTA).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+        '422':
+          description: |
+            Solicitud valida pero no aplicable: ZONA_NO_HABILITADA o DESCUENTO_EXCEDE_SUBTOTAL.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problema'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://catalogo:8080
+  /internal/eventos/{eventoId}/reglas:
+    get:
+      tags:
+      - Eventos
+      operationId: obtenerReglasEvento
+      summary: Obtener las reglas vigentes de un evento
+      description: |
+        Entrega las condiciones del evento que otros servicios necesitan para aplicar sus
+        propias reglas: estado, fechas, apertura de puertas, restriccion de edad, politica de
+        cancelacion, reingreso, entradas nominativas, limite de compra, reprogramacion y
+        cancelacion. Reservas lo usa para crear, cancelar y reembolsar; Entradas lo usa para
+        validar en puerta y transferir.
+      x-hu:
+      - HU-02
+      - HU-03
+      - HU-05
+      - HU-06
+      - HU-33
+      x-llamado-por:
+      - reservas
+      - entradas
+      - identidad
+      parameters:
+      - $ref: '#/components/parameters/EventoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Reglas del evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReglasEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://catalogo:8080
+  /internal/eventos/{eventoId}/zonas/{zonaId}:
+    get:
+      tags:
+      - Zonas
+      operationId: obtenerZonaEvento
+      summary: Obtener una zona del evento con sus puntos de acceso
+      description: |
+        Entradas lo usa en la validacion en puerta: una entrada solo se acepta en los puntos
+        de acceso habilitados para su zona.
+      x-hu:
+      - HU-01
+      x-llamado-por:
+      - entradas
+      parameters:
+      - $ref: '#/components/parameters/EventoId'
+      - name: zonaId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Zona del evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://catalogo:8080
+  /internal/eventos/{eventoId}/comision:
+    get:
+      tags:
+      - Eventos
+      operationId: obtenerComisionEvento
+      summary: Obtener la comision fijada y la penalizacion de un evento
+      description: |
+        Pagos lo usa para liquidar al organizador. La comision queda fijada al publicar el
+        evento. La penalizacion aplica solo si el organizador cancelo con menos de 7 dias
+        de anticipacion (5% del recaudo bruto).
+      x-hu:
+      - HU-06
+      - HU-30
+      x-llamado-por:
+      - pagos
+      parameters:
+      - $ref: '#/components/parameters/EventoId'
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Comision del evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComisionEvento'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://catalogo:8080
+  /internal/organizadores/{organizadorId}/cuenta-liquidacion:
+    get:
+      tags:
+      - Organizadores
+      operationId: obtenerCuentaLiquidacion
+      summary: Obtener la cuenta verificada del organizador para pagarle
+      description: |
+        Pagos lo usa para pagar liquidaciones. Solo se paga a la cuenta bancaria verificada
+        del organizador, y si la cuenta cambio hay una retencion de 72 horas.
+      x-hu:
+      - HU-29
+      x-llamado-por:
+      - pagos
+      parameters:
+      - name: organizadorId
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      - $ref: '#/components/parameters/CorrelationId'
+      responses:
+        '200':
+          description: Cuenta de liquidacion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CuentaLiquidacion'
+        '401':
+          $ref: '#/components/responses/NoAutorizado'
+        '404':
+          $ref: '#/components/responses/NoEncontrado'
+      security:
+      - tokenServicio: []
+      servers:
+      - url: http://catalogo:8080
+  /api/v1/sedes:
+    post:
+      tags:
+      - Sedes
+      operationId: crearSede
+      summary: Registrar una sede
+      description: Registra nombre, direccion, ciudad y aforo maximo legal.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SedeCrear'
+      responses:
+        '201':
+          description: Sede creada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sede'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: &id001
+                $ref: '#/components/schemas/Problema'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: AFORO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+    get:
+      tags:
+      - Sedes
+      operationId: listarSedes
+      summary: Listar sedes
+      description: Para que el organizador elija sede al crear un evento.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      - ORGANIZADOR
+      parameters:
+      - &id005
+        name: pagina
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+      - &id006
+        name: tamanio
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 20
+      - name: ciudad
+        in: query
+        required: false
+        schema: &id007
+          type: string
+      responses:
+        '200':
+          description: Sedes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaSedes'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}:
+    get:
+      tags:
+      - Sedes
+      operationId: obtenerSede
+      summary: Consultar una sede con sus zonas y accesos
+      description: Incluye zonas y puntos de acceso.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      - ORGANIZADOR
+      parameters:
+      - &id002
+        name: sedeId
+        in: path
+        required: true
+        schema: &id003
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Sede
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sede'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: SEDE_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+    delete:
+      tags:
+      - Sedes
+      operationId: eliminarSede
+      summary: Eliminar una sede
+      description: No se elimina una sede con eventos futuros publicados.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      responses:
+        '204':
+          description: Sede eliminada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: SEDE_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: SEDE_CON_EVENTOS_FUTUROS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/desactivacion:
+    post:
+      tags:
+      - Sedes
+      operationId: desactivarSede
+      summary: Desactivar una sede
+      description: Solo si no tiene ventas.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      responses:
+        '200':
+          description: Sede desactivada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Sede'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: SEDE_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: SEDE_CON_VENTAS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/zonas:
+    post:
+      tags:
+      - Sedes
+      operationId: crearZona
+      summary: Agregar una zona a una sede
+      description: El nombre es unico dentro de la sede y la suma de capacidades no puede superar el aforo maximo.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ZonaSedeCrear'
+      responses:
+        '201':
+          description: Zona creada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaSede'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: SEDE_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ZONA_DUPLICADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: AFORO_EXCEDIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/zonas/{zonaId}:
+    delete:
+      tags:
+      - Sedes
+      operationId: eliminarZona
+      summary: Eliminar una zona
+      description: No se elimina una zona con eventos futuros publicados.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      - &id004
+        name: zonaId
+        in: path
+        required: true
+        schema: *id003
+      responses:
+        '204':
+          description: Zona eliminada
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ZONA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ZONA_CON_EVENTOS_FUTUROS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/zonas/{zonaId}/desactivacion:
+    post:
+      tags:
+      - Sedes
+      operationId: desactivarZona
+      summary: Desactivar una zona
+      description: Solo si no tiene ventas.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      - *id004
+      responses:
+        '200':
+          description: Zona desactivada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaSede'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ZONA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ZONA_CON_VENTAS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/zonas/{zonaId}/asientos:
+    put:
+      tags:
+      - Sedes
+      operationId: definirAsientos
+      summary: Definir los asientos de una zona numerada
+      description: Fila y numero son unicos dentro de la zona. Permite marcar asientos inhabilitados y accesibles.
+        Solo aplica a zonas NUMERADAS y la cantidad no puede superar la capacidad de la zona.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AsientosDefinir'
+      responses:
+        '200':
+          description: Asientos definidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AsientosDefinidos'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ZONA_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ASIENTO_DUPLICADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: ZONA_NO_NUMERADA o CAPACIDAD_EXCEDIDA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/sedes/{sedeId}/puntos-acceso:
+    post:
+      tags:
+      - Sedes
+      operationId: crearPuntoAcceso
+      summary: Definir un punto de acceso de la sede
+      description: Indica las zonas a las que da ingreso.
+      x-hu:
+      - HU-01
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id002
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PuntoAccesoCrear'
+      responses:
+        '201':
+          description: Punto de acceso creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PuntoAcceso'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: SEDE_NO_ENCONTRADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: ZONA_NO_PERTENECE_A_SEDE
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos:
+    post:
+      tags:
+      - Eventos
+      operationId: crearEvento
+      summary: Crear un evento
+      description: Solo un organizador VERIFICADO sin deudas vencidas. Nace en BORRADOR. La fecha de inicio debe
+        ser al menos 72 horas posterior; la sede no puede tener otro evento superpuesto (2 horas de montaje y 2
+        de desmontaje).
+      x-hu:
+      - HU-02
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventoCrear'
+      responses:
+        '201':
+          description: Evento creado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evento'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: SEDE_OCUPADA
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: FECHAS_INVALIDAS, ORGANIZADOR_NO_VERIFICADO u ORGANIZADOR_CON_DEUDAS
+          content:
+            application/problem+json:
+              schema: *id001
+    get:
+      tags:
+      - Catalogo
+      operationId: listarEventos
+      summary: Buscar eventos
+      description: Solo eventos PUBLICADO, EN_VENTA o AGOTADO. Filtros por ciudad, fecha, categoria, rango de precio
+        y organizador.
+      x-hu:
+      - HU-04
+      security: []
+      parameters:
+      - *id005
+      - *id006
+      - name: ciudad
+        in: query
+        required: false
+        schema: *id007
+      - name: categoria
+        in: query
+        required: false
+        schema: *id007
+      - name: desde
+        in: query
+        required: false
+        schema: &id008
+          type: string
+          format: date-time
+      - name: hasta
+        in: query
+        required: false
+        schema: *id008
+      - name: precioMin
+        in: query
+        required: false
+        schema: &id009
+          $ref: '#/components/schemas/Monto'
+      - name: precioMax
+        in: query
+        required: false
+        schema: *id009
+      - name: organizadorId
+        in: query
+        required: false
+        schema: *id003
+      responses:
+        '200':
+          description: Eventos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginaEventos'
+  /api/v1/eventos/{eventoId}:
+    patch:
+      tags:
+      - Eventos
+      operationId: actualizarEvento
+      summary: Actualizar un evento
+      description: En BORRADOR se puede cambiar todo; en un evento publicado solo nombre, descripcion y limite de
+        compra (entre 1 y 10).
+      x-hu:
+      - HU-02
+      - HU-05
+      - HU-33
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - &id010
+        name: eventoId
+        in: path
+        required: true
+        schema: *id003
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EventoActualizar'
+      responses:
+        '200':
+          description: Evento actualizado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evento'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CAMPO_NO_MODIFICABLE_EN_EVENTO_PUBLICADO o LIMITE_MENOR_AL_COMPRADO
+          content:
+            application/problem+json:
+              schema: *id001
+    get:
+      tags:
+      - Catalogo
+      operationId: obtenerEvento
+      summary: Ver el detalle de un evento
+      description: Muestra zonas con precio vigente, restriccion de edad, politica de cancelacion y, si aun no inicia
+        la venta, la fecha de inicio de venta. La disponibilidad por zona se consulta en Inventario.
+      x-hu:
+      - HU-04
+      security: []
+      parameters:
+      - *id010
+      responses:
+        '200':
+          description: Evento
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evento'
+        '404':
+          description: EVENTO_NO_ENCONTRADO (los eventos en BORRADOR, CANCELADO o FINALIZADO no se muestran)
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}:
+    put:
+      tags:
+      - Eventos
+      operationId: configurarZonaEvento
+      summary: Habilitar una zona en el evento con su capacidad ofrecida
+      description: No puede superar la capacidad de la zona ni reducirse por debajo de lo vendido, bloqueado y retenido.
+      x-hu:
+      - HU-03
+      - HU-05
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ZonaEventoConfig'
+      responses:
+        '200':
+          description: Zona configurada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaEventoDetalle'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: CAPACIDAD_MENOR_A_LO_COMPROMETIDO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: CAPACIDAD_EXCEDE_ZONA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}/precios:
+    put:
+      tags:
+      - Eventos
+      operationId: definirPreciosZona
+      summary: Definir precios por fase de venta
+      description: Fases sin superposicion ni huecos dentro del periodo de venta. Con la venta iniciada solo se
+        modifican fases futuras. Los precios incluyen IGV.
+      x-hu:
+      - HU-07
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreciosZona'
+      responses:
+        '200':
+          description: Precios definidos
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaEventoDetalle'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: FASE_NO_MODIFICABLE
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: FASES_SUPERPUESTAS, FASES_CON_HUECOS o PRECIO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}/tarifa-dinamica:
+    put:
+      tags:
+      - Eventos
+      operationId: configurarTarifaDinamica
+      summary: Configurar la tarifa dinamica de una zona
+      description: Piso desde 0.8 y techo hasta 2.0 veces el precio base. Sube 10% al pasar 50%, 75% y 90% de ocupacion;
+        no aplica en PREVENTA.
+      x-hu:
+      - HU-08
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      - *id004
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TarifaDinamicaConfig'
+      responses:
+        '200':
+          description: Configuracion guardada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ZonaEventoDetalle'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: LIMITES_INVALIDOS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/publicacion:
+    post:
+      tags:
+      - Eventos
+      operationId: publicarEvento
+      summary: Publicar un evento
+      description: Solo desde BORRADOR. Exige al menos una zona con precio vigente y capacidad ofrecida, y fechas
+        de venta validas. Al publicar quedan fijados politica de cancelacion, cargo por servicio y comision, y se
+        genera el inventario.
+      x-hu:
+      - HU-03
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      responses:
+        '200':
+          description: Evento publicado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evento'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: EVENTO_NO_ESTA_EN_BORRADOR
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: EVENTO_INCOMPLETO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/reprogramacion:
+    post:
+      tags:
+      - Eventos
+      operationId: reprogramarEvento
+      summary: Reprogramar un evento
+      description: Maximo 2 reprogramaciones. Las reservas confirmadas se mantienen y se notifica a los clientes,
+        que tienen 7 dias para pedir reembolso. No permite cambiar de sede con reservas confirmadas.
+      x-hu:
+      - HU-05
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReprogramacionSolicitud'
+      responses:
+        '200':
+          description: Evento reprogramado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Evento'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: LIMITE_DE_REPROGRAMACIONES o EVENTO_YA_INICIADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: FECHAS_INVALIDAS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/cancelacion:
+    post:
+      tags:
+      - Eventos
+      operationId: cancelarEvento
+      summary: Cancelar un evento
+      description: Solo PUBLICADO, EN_VENTA o AGOTADO y no iniciado. Cierra la venta, cancela reservas y genera
+        reembolsos del 100%. Con menos de 7 dias de anticipacion se aplica una penalizacion del 5% al organizador.
+      x-hu:
+      - HU-06
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id010
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelacionEventoSolicitud'
+      responses:
+        '200':
+          description: Evento cancelado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CancelacionEventoResultado'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: EVENTO_NO_CANCELABLE
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/eventos/{eventoId}/zonas/{zonaId}/cotizacion:
+    get:
+      tags:
+      - Catalogo
+      operationId: cotizarZona
+      summary: Ver el precio total antes de reservar
+      description: Desglose con precio de la fase vigente, tarifa dinamica, cargo por servicio (10%, minimo S/ 2.00,
+        maximo S/ 15.00 por entrada) e IGV (18%).
+      x-hu:
+      - HU-07
+      - HU-08
+      - HU-09
+      security: []
+      parameters:
+      - *id010
+      - *id004
+      - name: cantidad
+        in: query
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+      - name: codigoAccesoPreventa
+        in: query
+        required: false
+        schema: *id007
+      responses:
+        '200':
+          description: Cotizacion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CotizacionRespuesta'
+        '403':
+          description: CODIGO_PREVENTA_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: EVENTO_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: EVENTO_NO_EN_VENTA
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: ZONA_NO_HABILITADA
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores:
+    post:
+      tags:
+      - Organizadores
+      operationId: registrarOrganizador
+      summary: Registrar un organizador
+      description: Exige RUC valido y unico, razon social y cuenta bancaria cuyo titular coincida con el RUC. Queda
+        en PENDIENTE_VERIFICACION.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - CLIENTE
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrganizadorRegistro'
+      responses:
+        '201':
+          description: Organizador registrado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: RUC_YA_REGISTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: RUC_INVALIDO o TITULAR_NO_COINCIDE
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}:
+    get:
+      tags:
+      - Organizadores
+      operationId: obtenerOrganizador
+      summary: Consultar un organizador
+      description: El organizador ve el suyo; el administrador ve cualquiera. Incluye la comision pactada.
+      x-hu:
+      - HU-29
+      - HU-30
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      - ADMIN
+      parameters:
+      - &id011
+        name: organizadorId
+        in: path
+        required: true
+        schema: *id003
+      responses:
+        '200':
+          description: Organizador
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/cuenta-bancaria:
+    put:
+      tags:
+      - Organizadores
+      operationId: cambiarCuentaBancaria
+      summary: Cambiar la cuenta bancaria
+      description: Requiere nueva verificacion y retiene las liquidaciones durante 72 horas.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      parameters:
+      - *id011
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CuentaBancaria'
+      responses:
+        '200':
+          description: Cuenta actualizada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: TITULAR_NO_COINCIDE
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/verificacion:
+    post:
+      tags:
+      - Organizadores
+      operationId: verificarOrganizador
+      summary: Verificar a un organizador
+      description: Solo un administrador, tras revisar sus documentos. Pasa a VERIFICADO.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id011
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerificacionOrganizadorSolicitud'
+      responses:
+        '200':
+          description: Organizador verificado
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ESTADO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/cuenta-bancaria/verificacion:
+    post:
+      tags:
+      - Organizadores
+      operationId: verificarCuentaBancaria
+      summary: Verificar la cuenta bancaria nueva
+      description: Un administrador verifica la cuenta cambiada.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id011
+      responses:
+        '200':
+          description: Cuenta verificada
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/suspension:
+    post:
+      tags:
+      - Organizadores
+      operationId: suspenderOrganizador
+      summary: Suspender a un organizador
+      description: No podra crear eventos nuevos; sus eventos en venta continuan hasta finalizar.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id011
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SuspensionSolicitud'
+      responses:
+        '200':
+          description: Organizador suspendido
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ESTADO_INVALIDO
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/baja:
+    post:
+      tags:
+      - Organizadores
+      operationId: darBajaOrganizador
+      summary: Dar de baja a un organizador
+      description: Solo sin eventos futuros, saldos pendientes ni deudas.
+      x-hu:
+      - HU-29
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ORGANIZADOR
+      - ADMIN
+      parameters:
+      - *id011
+      responses:
+        '200':
+          description: Organizador dado de baja
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '409':
+          description: ORGANIZADOR_CON_EVENTOS_FUTUROS, SALDOS_PENDIENTES o DEUDAS
+          content:
+            application/problem+json:
+              schema: *id001
+  /api/v1/organizadores/{organizadorId}/comision:
+    put:
+      tags:
+      - Organizadores
+      operationId: definirComision
+      summary: Definir la comision de un organizador
+      description: Entre 3% y 15%. Se fija en cada evento al publicarlo y no cambia para ese evento.
+      x-hu:
+      - HU-30
+      security:
+      - bearerAuth: []
+      x-roles:
+      - ADMIN
+      parameters:
+      - *id011
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComisionDefinir'
+      responses:
+        '200':
+          description: Comision definida
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Organizador'
+        '400':
+          description: Solicitud con campos faltantes o con formato invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '401':
+          description: Token ausente o invalido
+          content:
+            application/problem+json:
+              schema: *id001
+        '403':
+          description: El rol no permite esta operacion (o el recurso es de otro usuario)
+          content:
+            application/problem+json:
+              schema: *id001
+        '404':
+          description: ORGANIZADOR_NO_ENCONTRADO
+          content:
+            application/problem+json:
+              schema: *id001
+        '422':
+          description: COMISION_FUERA_DE_RANGO
+          content:
+            application/problem+json:
+              schema: *id001
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de usuario con el rol en el claim roles. Lo emite el flujo de autenticacion (fuera de las
+        HU).
+    tokenServicio:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: JWT de servicio para comunicacion entre microservicios.
+  parameters:
+    EventoId:
+      name: eventoId
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    CorrelationId:
+      name: X-Correlation-Id
+      in: header
+      required: false
+      description: Identificador para trazar la solicitud entre servicios.
+      schema:
+        type: string
+  responses:
+    NoAutorizado:
+      description: Token de servicio ausente o invalido
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+    NoEncontrado:
+      description: El recurso no existe
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problema'
+  schemas:
+    Monto:
+      type: number
+      format: double
+      minimum: 0
+      multipleOf: 0.01
+      description: Importe en soles (PEN) con 2 decimales.
+    CotizacionSolicitud:
+      type: object
+      required:
+      - zonaId
+      - cantidad
+      properties:
+        zonaId:
+          type: string
+          format: uuid
+        cantidad:
+          type: integer
+          minimum: 1
+        descuento:
+          allOf:
+          - $ref: '#/components/schemas/Monto'
+          default: 0
+          description: Descuento total (cupon) sobre el subtotal de entradas, calculado por Reservas.
+        codigoAccesoPreventa:
+          type: string
+          description: Solo si la fase vigente es PREVENTA con acceso restringido.
+    CotizacionRespuesta:
+      type: object
+      required:
+      - eventoId
+      - zonaId
+      - faseVenta
+      - cantidad
+      - precioUnitario
+      - subtotalEntradas
+      - descuento
+      - cargoServicio
+      - igvIncluido
+      - total
+      - moneda
+      - calculadaEn
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        zonaId:
+          type: string
+          format: uuid
+        faseVenta:
+          $ref: '#/components/schemas/FaseVenta'
+        cantidad:
+          type: integer
+        precioUnitario:
+          $ref: '#/components/schemas/Monto'
+        subtotalEntradas:
+          $ref: '#/components/schemas/Monto'
+        descuento:
+          $ref: '#/components/schemas/Monto'
+        cargoServicio:
+          $ref: '#/components/schemas/Monto'
+        igvIncluido:
+          $ref: '#/components/schemas/Monto'
+        total:
+          $ref: '#/components/schemas/Monto'
+          description: Subtotal de entradas, menos descuento, mas cargo por servicio (IGV incluido).
+        moneda:
+          type: string
+          enum:
+          - PEN
+        eventoExonerado:
+          type: boolean
+          description: Si es verdadero, el IGV solo se aplica al cargo por servicio.
+        calculadaEn:
+          type: string
+          format: date-time
+    ReglasEvento:
+      type: object
+      required:
+      - eventoId
+      - organizadorId
+      - estado
+      - fechaInicio
+      - fechaFin
+      - aperturaPuertas
+      - restriccionEdad
+      - politicaCancelacion
+      - permiteReingreso
+      - esNominativo
+      - limiteCompraPorCliente
+      - faseVentaActual
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        organizadorId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - BORRADOR
+          - PUBLICADO
+          - EN_VENTA
+          - AGOTADO
+          - FINALIZADO
+          - CANCELADO
+        fechaInicio:
+          type: string
+          format: date-time
+        fechaFin:
+          type: string
+          format: date-time
+        aperturaPuertas:
+          type: string
+          format: date-time
+          description: No posterior a la fecha de inicio.
+        restriccionEdad:
+          type: string
+          enum:
+          - TODO_PUBLICO
+          - '+14'
+          - '+18'
+        politicaCancelacion:
+          type: string
+          enum:
+          - ESTANDAR
+          - FLEXIBLE
+          - NO_REEMBOLSABLE
+          description: Fijada al publicar; no cambia despues.
+        permiteReingreso:
+          type: boolean
+        maxReingresos:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Presente solo si permiteReingreso es verdadero.
+        esNominativo:
+          type: boolean
+        limiteCompraPorCliente:
+          type: integer
+          minimum: 1
+          maximum: 10
+          description: Por defecto 6.
+        faseVentaActual:
+          allOf:
+          - $ref: '#/components/schemas/FaseVenta'
+          nullable: true
+          description: Nulo si el evento aun no esta en venta.
+        eventoExonerado:
+          type: boolean
+        reprogramacion:
+          type: object
+          nullable: true
+          description: Presente si el evento fue reprogramado (maximo 2 veces).
+          required:
+          - numeroReprogramaciones
+          - fechaAnterior
+          - fechaNueva
+          - notificadaEn
+          properties:
+            numeroReprogramaciones:
+              type: integer
+              minimum: 1
+              maximum: 2
+            fechaAnterior:
+              type: string
+              format: date-time
+            fechaNueva:
+              type: string
+              format: date-time
+            notificadaEn:
+              type: string
+              format: date-time
+              description: Inicio del plazo de 7 dias para pedir reembolso.
+        cancelacion:
+          type: object
+          nullable: true
+          description: Presente si el evento fue cancelado por el organizador.
+          required:
+          - canceladoEn
+          - motivo
+          properties:
+            canceladoEn:
+              type: string
+              format: date-time
+            motivo:
+              type: string
+    ZonaEvento:
+      type: object
+      required:
+      - zonaId
+      - nombre
+      - tipo
+      - capacidadOfrecida
+      - puntosAcceso
+      properties:
+        zonaId:
+          type: string
+          format: uuid
+        nombre:
+          type: string
+        tipo:
+          type: string
+          enum:
+          - NUMERADA
+          - GENERAL
+        capacidadOfrecida:
+          type: integer
+          minimum: 1
+        puntosAcceso:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required:
+            - puntoAccesoId
+            - nombre
+            properties:
+              puntoAccesoId:
+                type: string
+                format: uuid
+              nombre:
+                type: string
+    ComisionEvento:
+      type: object
+      required:
+      - eventoId
+      - organizadorId
+      - estadoEvento
+      - fechaFin
+      - porcentajeComision
+      - penalizacionCancelacionPorcentaje
+      properties:
+        eventoId:
+          type: string
+          format: uuid
+        organizadorId:
+          type: string
+          format: uuid
+        estadoEvento:
+          type: string
+          enum:
+          - BORRADOR
+          - PUBLICADO
+          - EN_VENTA
+          - AGOTADO
+          - FINALIZADO
+          - CANCELADO
+        fechaFin:
+          type: string
+          format: date-time
+        porcentajeComision:
+          type: number
+          minimum: 3
+          maximum: 15
+          description: Fijado al publicar el evento. No se cobra si el evento se cancela.
+        penalizacionCancelacionPorcentaje:
+          type: number
+          minimum: 0
+          maximum: 5
+          description: 5 si el organizador cancelo con menos de 7 dias de anticipacion; 0 en otro caso.
+    CuentaLiquidacion:
+      type: object
+      required:
+      - organizadorId
+      - estado
+      - ruc
+      - razonSocial
+      - cuentaVerificada
+      - cuenta
+      properties:
+        organizadorId:
+          type: string
+          format: uuid
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_VERIFICACION
+          - VERIFICADO
+          - SUSPENDIDO
+          - BAJA
+        ruc:
+          type: string
+          pattern: ^[0-9]{11}$
+        razonSocial:
+          type: string
+        cuentaVerificada:
+          type: boolean
+        retenidaHasta:
+          type: string
+          format: date-time
+          nullable: true
+          description: Si la cuenta cambio, las liquidaciones se retienen 72 horas.
+        cuenta:
+          type: object
+          required:
+          - banco
+          - cci
+          - titular
+          properties:
+            banco:
+              type: string
+            cci:
+              type: string
+              description: Codigo de cuenta interbancario.
+            titular:
+              type: string
+              description: Debe coincidir con el RUC del organizador.
+    FaseVenta:
+      type: string
+      enum:
+      - PREVENTA
+      - GENERAL
+      - ULTIMA_HORA
+    Problema:
+      type: object
+      required:
+      - codigo
+      - titulo
+      - estado
+      properties:
+        codigo:
+          type: string
+          description: Codigo de negocio estable (por ejemplo EVENTO_NO_EN_VENTA).
+        titulo:
+          type: string
+        detalle:
+          type: string
+        estado:
+          type: integer
+    ZonaSedeCrear:
+      type: object
+      properties:
+        nombre: *id007
+        tipo:
+          type: string
+          enum:
+          - NUMERADA
+          - GENERAL
+        capacidad:
+          type: integer
+          minimum: 1
+      required:
+      - nombre
+      - tipo
+      - capacidad
+    ZonaSede:
+      type: object
+      properties:
+        zonaId: *id003
+        nombre: *id007
+        tipo:
+          type: string
+          enum:
+          - NUMERADA
+          - GENERAL
+        capacidad: &id012
+          type: integer
+        estado:
+          type: string
+          enum:
+          - ACTIVA
+          - INACTIVA
+      required:
+      - zonaId
+      - nombre
+      - tipo
+      - capacidad
+      - estado
+    SedeCrear:
+      type: object
+      properties:
+        nombre: *id007
+        direccion: *id007
+        ciudad: *id007
+        aforoMaximo:
+          type: integer
+          minimum: 1
+      required:
+      - nombre
+      - direccion
+      - ciudad
+      - aforoMaximo
+    Sede:
+      type: object
+      properties:
+        sedeId: *id003
+        nombre: *id007
+        direccion: *id007
+        ciudad: *id007
+        aforoMaximo: *id012
+        estado:
+          type: string
+          enum:
+          - ACTIVA
+          - INACTIVA
+        zonas:
+          type: array
+          items:
+            $ref: '#/components/schemas/ZonaSede'
+        puntosAcceso:
+          type: array
+          items:
+            $ref: '#/components/schemas/PuntoAcceso'
+      required:
+      - sedeId
+      - nombre
+      - direccion
+      - ciudad
+      - aforoMaximo
+      - estado
+      - zonas
+    PaginaSedes:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Sede'
+        pagina: *id012
+        tamanio: *id012
+        total: *id012
+      required:
+      - items
+      - pagina
+      - tamanio
+      - total
+    AsientosDefinir:
+      type: object
+      properties:
+        asientos:
+          type: array
+          items:
+            type: object
+            properties:
+              fila: *id007
+              numero: *id012
+              inhabilitado: &id013
+                type: boolean
+              accesible:
+                type: boolean
+                description: 'Asiento accesible: se vende a quien lo requiere hasta 72 horas antes del evento.'
+            required:
+            - fila
+            - numero
+          minItems: 1
+      required:
+      - asientos
+    AsientosDefinidos:
+      type: object
+      properties:
+        zonaId: *id003
+        total: *id012
+      required:
+      - zonaId
+      - total
+    PuntoAccesoCrear:
+      type: object
+      properties:
+        nombre: *id007
+        zonaIds:
+          type: array
+          items: *id003
+          minItems: 1
+      required:
+      - nombre
+      - zonaIds
+    PuntoAcceso:
+      type: object
+      properties:
+        puntoAccesoId: *id003
+        nombre: *id007
+        zonaIds:
+          type: array
+          items: *id003
+      required:
+      - puntoAccesoId
+      - nombre
+      - zonaIds
+    EventoCrear:
+      type: object
+      properties:
+        sedeId: *id003
+        nombre: *id007
+        descripcion: *id007
+        categoria: *id007
+        fechaInicio: *id008
+        fechaFin: *id008
+        aperturaPuertas: *id008
+        restriccionEdad: &id014
+          type: string
+          enum:
+          - TODO_PUBLICO
+          - '+14'
+          - '+18'
+        politicaCancelacion: &id015
+          type: string
+          enum:
+          - ESTANDAR
+          - FLEXIBLE
+          - NO_REEMBOLSABLE
+        permiteReingreso: *id013
+        maxReingresos: &id016
+          type: integer
+          minimum: 1
+        esNominativo: *id013
+        limiteCompraPorCliente: &id017
+          type: integer
+          minimum: 1
+          maximum: 10
+          default: 6
+        eventoExonerado: *id013
+        fechaInicioVenta: *id008
+        fechaFinVenta: *id008
+      required:
+      - nombre
+      - sedeId
+      - categoria
+      - fechaInicio
+      - fechaFin
+      - aperturaPuertas
+      - restriccionEdad
+      - politicaCancelacion
+      - permiteReingreso
+      - esNominativo
+    EventoActualizar:
+      type: object
+      properties:
+        nombre: *id007
+        descripcion: *id007
+        categoria: *id007
+        fechaInicio: *id008
+        fechaFin: *id008
+        aperturaPuertas: *id008
+        restriccionEdad: *id014
+        politicaCancelacion: *id015
+        permiteReingreso: *id013
+        maxReingresos: *id016
+        esNominativo: *id013
+        limiteCompraPorCliente: *id017
+        eventoExonerado: *id013
+        fechaInicioVenta: *id008
+        fechaFinVenta: *id008
+      description: Todos los campos son opcionales. En un evento publicado solo se pueden cambiar nombre, descripcion
+        y limite de compra (sin bajar de lo que ya tienen los clientes); la fecha se cambia con la reprogramacion
+        y la politica de cancelacion no cambia.
+    ZonaEventoDetalle:
+      type: object
+      properties:
+        zonaId: *id003
+        nombre: *id007
+        tipo:
+          type: string
+          enum:
+          - NUMERADA
+          - GENERAL
+        capacidadOfrecida: *id012
+        precioVigente:
+          $ref: '#/components/schemas/Monto'
+          nullable: true
+        faseVigente:
+          $ref: '#/components/schemas/FaseVenta'
+          nullable: true
+        tarifaDinamica: *id013
+      required:
+      - zonaId
+      - nombre
+      - tipo
+      - capacidadOfrecida
+    Evento:
+      type: object
+      properties:
+        eventoId: *id003
+        organizadorId: *id003
+        sede:
+          type: object
+          properties:
+            sedeId: *id003
+            nombre: *id007
+            ciudad: *id007
+        zonas:
+          type: array
+          items:
+            $ref: '#/components/schemas/ZonaEventoDetalle'
+        reprogramaciones: *id012
+        estado: &id018
+          type: string
+          enum:
+          - BORRADOR
+          - PUBLICADO
+          - EN_VENTA
+          - AGOTADO
+          - FINALIZADO
+          - CANCELADO
+        nombre: *id007
+        descripcion: *id007
+        categoria: *id007
+        fechaInicio: *id008
+        fechaFin: *id008
+        aperturaPuertas: *id008
+        restriccionEdad: *id014
+        politicaCancelacion: *id015
+        permiteReingreso: *id013
+        maxReingresos: *id016
+        esNominativo: *id013
+        limiteCompraPorCliente: *id017
+        eventoExonerado: *id013
+        fechaInicioVenta: *id008
+        fechaFinVenta: *id008
+      required:
+      - eventoId
+      - organizadorId
+      - nombre
+      - estado
+      - fechaInicio
+      - fechaFin
+      - restriccionEdad
+      - politicaCancelacion
+      - zonas
+    EventoResumen:
+      type: object
+      properties:
+        eventoId: *id003
+        nombre: *id007
+        categoria: *id007
+        estado: *id018
+        fechaInicio: *id008
+        ciudad: *id007
+        sedeNombre: *id007
+        restriccionEdad: *id014
+        precioDesde:
+          $ref: '#/components/schemas/Monto'
+          nullable: true
+      required:
+      - eventoId
+      - nombre
+      - estado
+      - fechaInicio
+      - ciudad
+      - restriccionEdad
+    PaginaEventos:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EventoResumen'
+        pagina: *id012
+        tamanio: *id012
+        total: *id012
+      required:
+      - items
+      - pagina
+      - tamanio
+      - total
+    ZonaEventoConfig:
+      type: object
+      properties:
+        capacidadOfrecida:
+          type: integer
+          minimum: 1
+          description: No puede superar la capacidad de la zona ni quedar bajo lo vendido, bloqueado y retenido.
+      required:
+      - capacidadOfrecida
+    PreciosZona:
+      type: object
+      properties:
+        fases:
+          type: array
+          items:
+            type: object
+            properties:
+              fase:
+                $ref: '#/components/schemas/FaseVenta'
+              desde: *id008
+              hasta: *id008
+              precioBase: *id009
+              codigoAcceso:
+                type: string
+                description: Solo PREVENTA con acceso restringido.
+            required:
+            - fase
+            - desde
+            - hasta
+            - precioBase
+          minItems: 1
+      required:
+      - fases
+    TarifaDinamicaConfig:
+      type: object
+      properties:
+        activa: *id013
+        piso:
+          type: number
+          minimum: 0.8
+        techo:
+          type: number
+          maximum: 2.0
+      required:
+      - activa
+    ReprogramacionSolicitud:
+      type: object
+      properties:
+        nuevaFechaInicio: *id008
+        nuevaFechaFin: *id008
+        nuevaAperturaPuertas: *id008
+      required:
+      - nuevaFechaInicio
+      - nuevaFechaFin
+      - nuevaAperturaPuertas
+    CancelacionEventoSolicitud:
+      type: object
+      properties:
+        motivo: *id007
+      required:
+      - motivo
+    CancelacionEventoResultado:
+      type: object
+      properties:
+        eventoId: *id003
+        estado:
+          type: string
+          enum:
+          - CANCELADO
+        penalizacionPorcentaje:
+          type: number
+          minimum: 0
+          maximum: 5
+      required:
+      - eventoId
+      - estado
+      - penalizacionPorcentaje
+    CuentaBancaria:
+      type: object
+      properties:
+        banco: *id007
+        cci: *id007
+        titular: *id007
+      required:
+      - banco
+      - cci
+      - titular
+    OrganizadorRegistro:
+      type: object
+      properties:
+        ruc:
+          type: string
+          pattern: ^[0-9]{11}$
+        razonSocial: *id007
+        cuentaBancaria:
+          $ref: '#/components/schemas/CuentaBancaria'
+      required:
+      - ruc
+      - razonSocial
+      - cuentaBancaria
+    Organizador:
+      type: object
+      properties:
+        organizadorId: *id003
+        estado:
+          type: string
+          enum:
+          - PENDIENTE_VERIFICACION
+          - VERIFICADO
+          - SUSPENDIDO
+          - BAJA
+        ruc: *id007
+        razonSocial: *id007
+        cuentaVerificada: *id013
+        porcentajeComision:
+          type: number
+          minimum: 3
+          maximum: 15
+          nullable: true
+      required:
+      - organizadorId
+      - estado
+      - ruc
+      - razonSocial
+      - cuentaVerificada
+    VerificacionOrganizadorSolicitud:
+      type: object
+      properties:
+        observaciones: *id007
+    SuspensionSolicitud:
+      type: object
+      properties:
+        motivo: *id007
+      required:
+      - motivo
+    ComisionDefinir:
+      type: object
+      properties:
+        porcentaje:
+          type: number
+          minimum: 3
+          maximum: 15
+      required:
+      - porcentaje

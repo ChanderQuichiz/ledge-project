@@ -1,0 +1,433 @@
+Project pagos {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio PAGOS. HU-17 (financiamiento), HU-19 a HU-25, HU-30, HU-31 y los OpenAPI que Pagos consume
+  (reservas, catalogo, identidad). Importes en soles (PEN), decimal(12,2). Referencias a otros servicios: logicas.
+  '''
+}
+
+Enum estado_pago {
+  INICIADO
+  APROBADO
+  RECHAZADO
+  EN_REVISION
+  REEMBOLSADO_PARCIAL
+  REEMBOLSADO_TOTAL
+  CONTRACARGO
+}
+
+Enum medio_pago {
+  TARJETA
+  BILLETERA_DIGITAL
+}
+
+Enum tipo_comprobante {
+  BOLETA
+  FACTURA
+  NOTA_CREDITO
+}
+
+Enum estado_comprobante {
+  EMITIDO
+  ANULADO
+}
+
+Enum resultado_notificacion {
+  PROCESADA
+  DUPLICADA
+  FUERA_DE_ORDEN
+  MONTO_DISTINTO
+  HUERFANA
+  FIRMA_INVALIDA
+}
+
+Enum estado_revision {
+  PENDIENTE
+  RESUELTA
+  AUTORREEMBOLSADA
+}
+
+Enum resolucion_revision {
+  CONFIRMAR
+  CONFIRMAR_Y_REEMBOLSAR_DIFERENCIA
+  RECHAZAR_Y_REEMBOLSAR
+  REEMBOLSAR_TOTAL_SIN_ASIENTOS
+}
+
+Enum motivo_reembolso {
+  CANCELACION_CLIENTE
+  EVENTO_CANCELADO
+  EVENTO_REPROGRAMADO
+  PAGO_DUPLICADO
+  ASIENTO_NO_DISPONIBLE
+  AJUSTE_ADMIN
+}
+
+Enum estado_reembolso {
+  SOLICITADO
+  EN_PROCESO
+  COMPLETADO
+  FALLIDO
+}
+
+Enum decision_aprobacion {
+  APROBADA
+  RECHAZADA
+}
+
+Enum estado_contracargo {
+  RECIBIDO
+  EN_DISPUTA
+  GANADO
+  PERDIDO
+}
+
+Enum tipo_discrepancia {
+  PASARELA_SIN_REGISTRO
+  REGISTRO_SIN_PASARELA
+  MONTO_DISTINTO
+}
+
+Enum estado_discrepancia {
+  ABIERTA
+  RESUELTA
+  ESCALADA
+}
+
+Enum estado_liquidacion {
+  GENERADA
+  APROBADA
+  PAGADA
+  OBSERVADA
+}
+
+Enum origen_retencion {
+  PAGO_EN_REVISION
+  CONTRACARGO_ABIERTO
+  DISCREPANCIA_ABIERTA
+}
+
+Enum estado_retencion {
+  RETENIDA
+  LIBERADA
+}
+
+Enum origen_deuda {
+  LIQUIDACION_NEGATIVA
+  EVENTO_CANCELADO
+  CONTRACARGO
+  PENALIZACION
+}
+
+Enum estado_deuda {
+  PENDIENTE
+  COMPENSADA_PARCIAL
+  COMPENSADA
+}
+
+Table pagos {
+  id uuid [pk]
+  reserva_id uuid [not null, note: 'Ref logica reservas.reservas']
+  cliente_id uuid [not null]
+  evento_id uuid [not null]
+  organizador_id uuid [not null, note: 'Para liquidacion y descuentos por contracargos o reembolsos']
+  intento_numero smallint [not null, note: 'Maximo 3 intentos fallidos por reserva']
+  monto decimal(12,2) [not null, note: 'Total congelado de la reserva; un solo cobro, sin pagos parciales']
+  moneda char(3) [not null, default: 'PEN']
+  medio_pago medio_pago [not null]
+  medio_ultimos4 char(4) [note: 'Solo datos enmascarados; no se guardan datos sensibles de pago']
+  referencia_pasarela varchar(100) [not null, unique, note: 'Misma referencia = un solo pago']
+  estado estado_pago [not null, default: 'INICIADO']
+  monto_cobrado decimal(12,2) [note: 'Monto notificado por la pasarela. Si difiere de monto, pasa a EN_REVISION']
+  monto_reembolsado_acumulado decimal(12,2) [not null, default: 0, note: 'Nunca supera el monto efectivamente pagado']
+  tipo_comprobante_solicitado tipo_comprobante [not null, note: 'BOLETA o FACTURA, elegido antes de pagar']
+  ruc_facturacion char(11)
+  razon_social_facturacion varchar(200)
+  motivo_rechazo varchar(200)
+  aprobado_tras_vencimiento boolean [not null, default: false, note: 'Aprobado cuando el bloqueo ya habia vencido']
+  creado_en timestamptz [not null, default: `now()`]
+  aprobado_en timestamptz
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (reserva_id, intento_numero) [unique]
+    (reserva_id, estado) [name: 'ix_pagos_reserva_estado', note: 'Crear UNICO PARCIAL (reserva_id) WHERE estado = INICIADO: solo un intento en proceso por reserva']
+    (evento_id, estado)
+    estado
+  }
+
+  checks {
+    `moneda = 'PEN'` [name: 'ck_pagos_moneda']
+    `intento_numero between 1 and 3` [name: 'ck_pagos_intentos']
+    `monto_reembolsado_acumulado <= coalesce(monto_cobrado, monto)` [name: 'ck_pagos_reembolso_max']
+    `tipo_comprobante_solicitado <> 'FACTURA' or (ruc_facturacion ~ '^[0-9]{11}$' and razon_social_facturacion is not null)` [name: 'ck_pagos_factura']
+  }
+}
+
+Table notificaciones_pasarela {
+  id uuid [pk]
+  id_notificacion_externa varchar(100) [not null, unique, note: 'Idempotencia: la misma notificacion repetida se registra una sola vez']
+  referencia_pasarela varchar(100) [not null]
+  pago_id uuid [ref: > pagos.id, note: 'NULL si es huerfana']
+  reserva_id uuid [note: 'NULL si la reserva no existe (notificacion huerfana, su monto se reembolsa)']
+  estado_notificado varchar(30) [not null]
+  monto_notificado decimal(12,2) [not null]
+  firma_valida boolean [not null, note: 'Verificacion de autenticidad de la pasarela']
+  resultado resultado_notificacion [not null]
+  recibida_en timestamptz [not null, default: `now()`]
+  procesada_en timestamptz
+
+  indexes {
+    referencia_pasarela
+    pago_id
+    resultado
+  }
+
+  Note: 'Un estado final (APROBADO o RECHAZADO) nunca vuelve a INICIADO aunque lleguen notificaciones fuera de orden.'
+}
+
+Table revisiones_pago {
+  id uuid [pk]
+  pago_id uuid [not null, unique, ref: - pagos.id]
+  estado estado_revision [not null, default: 'PENDIENTE']
+  registrada_en timestamptz [not null, default: `now()`]
+  vence_en timestamptz [not null, note: 'registrada_en + 24 horas']
+  monto_cobrado decimal(12,2) [not null]
+  monto_reserva decimal(12,2) [not null]
+  resolucion resolucion_revision
+  resuelta_por uuid [note: 'SOPORTE o ADMIN. No puede ser el usuario vinculado a la reserva']
+  motivo text [note: 'Obligatorio al resolver']
+  resuelta_en timestamptz
+
+  indexes {
+    (estado, vence_en) [name: 'ix_revisiones_vencimiento', note: 'Sin resolver a las 24 h: reembolso automatico del 100%, reserva EXPIRADA, asientos DISPONIBLE']
+  }
+}
+
+Table reembolsos {
+  id uuid [pk]
+  pago_id uuid [not null, ref: > pagos.id]
+  reserva_id uuid [not null]
+  evento_id uuid [not null]
+  organizador_id uuid [not null]
+  motivo motivo_reembolso [not null]
+  origen_referencia varchar(100) [not null, note: 'Id del origen (cancelacion, evento, ajuste). Un mismo origen genera un solo reembolso']
+  monto decimal(12,2) [not null]
+  incluye_cargo_servicio boolean [not null, note: 'Solo true en EVENTO_CANCELADO, EVENTO_REPROGRAMADO, PAGO_DUPLICADO y ASIENTO_NO_DISPONIBLE']
+  valor_entradas_reembolsado decimal(12,2) [not null, note: 'Reduce proporcionalmente la comision del organizador']
+  medio_pago medio_pago [not null, note: 'El mismo medio con el que se pago']
+  estado estado_reembolso [not null, default: 'SOLICITADO']
+  reintentos smallint [not null, default: 0, note: 'Hasta 3 reintentos en 72 horas']
+  ventana_reintentos_hasta timestamptz
+  requiere_revision_manual boolean [not null, default: false]
+  referencia_reembolso_pasarela varchar(100)
+  solicitado_por uuid [note: 'NULL = SISTEMA. Obligatorio en AJUSTE_ADMIN']
+  aplicado_en_liquidacion_id uuid [ref: > liquidaciones.id, note: 'Liquidacion en que se descuenta al organizador']
+  solicitado_en timestamptz [not null, default: `now()`]
+  completado_en timestamptz
+
+  indexes {
+    (pago_id, motivo, origen_referencia) [unique, name: 'ux_reembolso_origen']
+    (estado, ventana_reintentos_hasta)
+    (evento_id, estado)
+  }
+
+  checks {
+    `monto > 0` [name: 'ck_reembolsos_monto']
+  }
+
+  Note: 'Solo se reembolsan pagos APROBADO o REEMBOLSADO_PARCIAL. El acumulado nunca supera lo pagado. Un pago con contracargo no se reembolsa ademas de lo disputado.'
+}
+
+Table aprobaciones_reembolso {
+  id uuid [pk]
+  reembolso_id uuid [not null, ref: > reembolsos.id]
+  aprobador_id uuid [not null, note: 'No puede ser quien creo la solicitud']
+  rol_aprobador varchar(20) [not null, note: 'SOPORTE hasta S/ 200; ADMIN hasta S/ 500; mayores a S/ 500 requieren un segundo ADMIN']
+  decision decision_aprobacion [not null]
+  motivo text [not null]
+  decidida_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (reembolso_id, aprobador_id) [unique]
+  }
+
+  Note: 'Aprobaciones de AJUSTE_ADMIN.'
+}
+
+Table series_comprobante {
+  serie varchar(8) [pk]
+  tipo tipo_comprobante [not null]
+  ultimo_numero bigint [not null, default: 0, note: 'Correlativo por serie, sin saltos ni repeticiones (incremento transaccional)']
+}
+
+Table comprobantes {
+  id uuid [pk]
+  pago_id uuid [not null, ref: > pagos.id]
+  reembolso_id uuid [unique, ref: - reembolsos.id, note: 'Solo en notas de credito: una por reembolso']
+  comprobante_origen_id uuid [ref: > comprobantes.id, note: 'Solo en notas de credito: referencia al comprobante original']
+  reserva_id uuid [not null]
+  tipo tipo_comprobante [not null, note: 'Un comprobante emitido no cambia de boleta a factura ni viceversa']
+  serie varchar(8) [not null, ref: > series_comprobante.serie]
+  numero bigint [not null]
+  receptor_documento_tipo varchar(20) [not null, note: 'DNI, CARNE_EXTRANJERIA, PASAPORTE o RUC']
+  receptor_documento_numero varchar(20) [not null]
+  receptor_razon_social varchar(200) [note: 'Obligatoria en factura']
+  valor_entradas decimal(12,2) [not null]
+  cargo_servicio decimal(12,2) [not null]
+  descuentos decimal(12,2) [not null]
+  igv decimal(12,2) [not null]
+  total decimal(12,2) [not null]
+  estado estado_comprobante [not null, default: 'EMITIDO', note: 'Inmutable; solo se anula mediante nota de credito']
+  emitido_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (serie, numero) [unique]
+    (pago_id, tipo) [name: 'ix_comprobante_pago_tipo', note: 'Crear UNICO PARCIAL (pago_id) WHERE tipo <> NOTA_CREDITO: emision idempotente, un comprobante por confirmacion de pago']
+  }
+
+  Note: 'Las cortesias no generan comprobante de venta.'
+}
+
+Table contracargos {
+  id uuid [pk]
+  pago_id uuid [not null, ref: > pagos.id]
+  cliente_id uuid [not null]
+  evento_id uuid [not null]
+  organizador_id uuid [not null]
+  referencia_contracargo varchar(100) [not null, unique]
+  monto decimal(12,2) [not null]
+  estado estado_contracargo [not null, default: 'RECIBIDO']
+  recibido_en timestamptz [not null, default: `now()`]
+  evidencia_vence_en timestamptz [not null, note: 'recibido_en + 7 dias']
+  evidencia_presentada_en timestamptz
+  evidencia_referencia varchar(200) [note: 'Registro de acceso (accesos_entrada) si las entradas fueron USADAS']
+  resuelto_en timestamptz
+  aplicado_en_liquidacion_id uuid [ref: > liquidaciones.id, note: 'Si se pierde, se descuenta al organizador']
+
+  indexes {
+    (pago_id, estado)
+    (evento_id, estado)
+    (cliente_id, estado)
+  }
+
+  Note: 'Dos contracargos PERDIDOS de un mismo cliente provocan el bloqueo de su cuenta (evento hacia Identidad).'
+}
+
+Table conciliaciones_diarias {
+  id uuid [pk]
+  fecha date [not null, unique]
+  total_sistema decimal(12,2) [not null]
+  total_pasarela decimal(12,2) [not null]
+  ejecutada_en timestamptz [not null, default: `now()`]
+}
+
+Table discrepancias_conciliacion {
+  id uuid [pk]
+  conciliacion_id uuid [not null, ref: > conciliaciones_diarias.id]
+  tipo tipo_discrepancia [not null]
+  pago_id uuid [ref: > pagos.id]
+  evento_id uuid
+  referencia_pasarela varchar(100)
+  monto_sistema decimal(12,2)
+  monto_pasarela decimal(12,2)
+  estado estado_discrepancia [not null, default: 'ABIERTA']
+  abierta_en timestamptz [not null, default: `now()`]
+  escalada_en timestamptz [note: 'Abierta por mas de 3 dias: se escala a un administrador']
+  resuelta_por uuid
+  motivo_resolucion text
+  resuelta_en timestamptz
+
+  indexes {
+    (estado, abierta_en)
+    (evento_id, estado)
+  }
+}
+
+Table ajustes_pago {
+  id uuid [pk]
+  pago_id uuid [not null, ref: > pagos.id]
+  discrepancia_id uuid [ref: > discrepancias_conciliacion.id]
+  tipo varchar(40) [not null]
+  monto decimal(12,2) [not null]
+  motivo text [not null]
+  registrado_por uuid [not null]
+  registrado_en timestamptz [not null, default: `now()`]
+
+  Note: 'Los pagos ya conciliados solo se corrigen con ajustes registrados, nunca por edicion directa.'
+}
+
+Table liquidaciones {
+  id uuid [pk]
+  evento_id uuid [not null, unique, note: 'Un evento tiene una sola liquidacion final']
+  organizador_id uuid [not null]
+  estado estado_liquidacion [not null, default: 'GENERADA']
+  generada_en timestamptz [not null, note: '3 dias habiles despues de finalizar el evento']
+  corte_en timestamptz [not null, note: 'Corte del resumen de Reservas (ResumenLiquidacionEvento.corteEn)']
+  reservas_finalizadas integer [not null]
+  entradas_vendidas integer [not null]
+  ventas_brutas_entradas decimal(12,2) [not null]
+  descuentos_financiados_organizador decimal(12,2) [not null, default: 0]
+  ventas_netas decimal(12,2) [not null, note: 'Ventas brutas menos descuentos del organizador']
+  porcentaje_comision decimal(4,2) [not null, note: 'Fijado al publicar el evento (Catalogo.comision)']
+  comision decimal(12,2) [not null, note: 'Sobre ventas netas; no sobre cargo por servicio ni IGV']
+  reembolsos_a_cargo decimal(12,2) [not null, default: 0]
+  contracargos_a_cargo decimal(12,2) [not null, default: 0]
+  penalizaciones decimal(12,2) [not null, default: 0]
+  deudas_descontadas decimal(12,2) [not null, default: 0]
+  monto_retenido decimal(12,2) [not null, default: 0]
+  monto_a_pagar decimal(12,2) [not null, note: 'Si es negativo se registra como deuda (deudas_organizador)']
+  banco_destino varchar(80) [note: 'Solo a la cuenta verificada del organizador']
+  cci_destino varchar(20)
+  titular_destino varchar(200)
+  retenida_hasta timestamptz [note: 'Retencion de 72 h por cambio de cuenta']
+  observacion text [note: 'Obligatoria si OBSERVADA']
+  aprobada_por uuid
+  pagada_en timestamptz
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organizador_id, estado)
+    estado
+  }
+
+  Note: 'Solo cuentan reservas FINALIZADAS. Una liquidacion PAGADA es inmutable: los ajustes se aplican en la siguiente.'
+}
+
+Table liquidacion_retenciones {
+  id uuid [pk]
+  liquidacion_id uuid [not null, ref: > liquidaciones.id]
+  origen origen_retencion [not null]
+  origen_id uuid [not null, note: 'Id del pago, contracargo o discrepancia']
+  monto decimal(12,2) [not null]
+  estado estado_retencion [not null, default: 'RETENIDA']
+  liberada_en timestamptz
+
+  indexes {
+    (liquidacion_id, estado)
+    (origen, origen_id) [unique]
+  }
+
+  Note: 'Montos de pagos EN_REVISION, contracargos abiertos y discrepancias ABIERTAS: se liquidan al resolverse.'
+}
+
+Table deudas_organizador {
+  id uuid [pk]
+  organizador_id uuid [not null]
+  evento_id uuid
+  origen origen_deuda [not null]
+  liquidacion_origen_id uuid [ref: > liquidaciones.id]
+  monto decimal(12,2) [not null]
+  saldo_pendiente decimal(12,2) [not null]
+  estado estado_deuda [not null, default: 'PENDIENTE']
+  vence_en timestamptz [not null, note: 'Una deuda vencida impide crear eventos nuevos (HU-02)']
+  creada_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (organizador_id, estado, vence_en)
+  }
+
+  checks {
+    `saldo_pendiente between 0 and monto` [name: 'ck_deudas_saldo']
+  }
+}

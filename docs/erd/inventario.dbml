@@ -1,0 +1,217 @@
+Project inventario {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio INVENTARIO. HU-10, HU-11, HU-12, HU-13, HU-39, HU-40 y OpenAPI inventario.
+  Referencias a otros servicios: logicas (sin FK).
+  '''
+}
+
+Enum estado_unidad {
+  DISPONIBLE
+  BLOQUEADO
+  VENDIDO
+  RETENIDO
+  INHABILITADO
+}
+
+Enum tipo_zona {
+  NUMERADA
+  GENERAL
+}
+
+Enum origen_bloqueo {
+  SOLICITUD_CLIENTE
+  OFERTA_LISTA_ESPERA
+}
+
+Enum estado_bloqueo {
+  VIGENTE
+  VENCIDO
+  LIBERADO
+  VENDIDO
+  VENTA_ANULADA
+}
+
+Enum motivo_liberacion {
+  VOLUNTARIA
+  RESERVA_CANCELADA
+  PAGOS_FALLIDOS
+  REVISION_NO_RESUELTA
+  VENCIMIENTO
+}
+
+Enum motivo_extension {
+  PAGO_EN_PROCESO
+  PAGO_EN_REVISION
+}
+
+Enum motivo_anulacion_venta {
+  CANCELACION_CLIENTE
+  REEMBOLSO_REPROGRAMACION
+}
+
+Enum estado_retencion {
+  RETENIDA
+  DEVUELTA_A_VENTA
+  LIBERADA_AUTOMATICAMENTE
+  EMITIDA_COMO_CORTESIA
+}
+
+Enum estado_solicitud_espera {
+  ACTIVA
+  OFERTADA
+  COMPRADA
+  EXPIRADA
+  RECHAZADA
+  SALIO
+  CERRADA
+}
+
+Enum estado_oferta {
+  ACTIVA
+  ACEPTADA
+  EXPIRADA
+  RECHAZADA
+}
+
+Table eventos_inventario {
+  evento_id uuid [pk, note: 'Ref logica catalogo.eventos. Proyeccion local alimentada por eventos de Catalogo']
+  estado_evento varchar(20) [not null, note: 'BORRADOR, PUBLICADO, EN_VENTA, AGOTADO, FINALIZADO, CANCELADO. Solo EN_VENTA permite bloquear (EVENTO_NO_EN_VENTA)']
+  fecha_inicio timestamptz [not null, note: 'Para liberar retenidos 72 h antes y cerrar la lista de espera al iniciar']
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  Note: 'Inventario no llama a Catalogo (no figura como consumidor); mantiene esta proyeccion por eventos.'
+}
+
+Table zonas_inventario {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos_inventario.evento_id]
+  zona_id uuid [not null, note: 'Ref logica catalogo.zonas_sede']
+  tipo tipo_zona [not null]
+  capacidad_ofrecida integer [not null, note: 'Disponible = capacidad ofrecida - bloqueados - vendidos - retenidos - inhabilitados']
+  habilitada boolean [not null, default: true, note: 'false produce ZONA_NO_HABILITADA']
+
+  indexes {
+    (evento_id, zona_id) [unique]
+  }
+}
+
+Table unidades_inventario {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos_inventario.evento_id]
+  zona_id uuid [not null, note: 'Ref logica catalogo.zonas_sede']
+  asiento_id uuid [note: 'Ref logica catalogo.asientos_zona. Solo zonas NUMERADAS (asientoIds)']
+  numero_cupo integer [note: 'Solo zonas GENERALES (un cupo por unidad)']
+  es_accesible boolean [not null, default: false]
+  estado estado_unidad [not null, default: 'DISPONIBLE']
+  version integer [not null, default: 0, note: 'Bloqueo optimista: de dos solicitudes simultaneas solo una gana']
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (evento_id, zona_id, asiento_id) [unique, name: 'ux_unidad_asiento']
+    (evento_id, zona_id, numero_cupo) [unique, name: 'ux_unidad_cupo']
+    (evento_id, zona_id, estado) [name: 'ix_unidad_disponibilidad']
+  }
+
+  checks {
+    `(asiento_id is not null and numero_cupo is null) or (asiento_id is null and numero_cupo is not null)` [name: 'ck_unidad_tipo']
+  }
+
+  Note: 'Una fila por asiento (NUMERADA) o por cupo (GENERAL), generada al publicar el evento. Transiciones validas: DISPONIBLE>BLOQUEADO, BLOQUEADO>DISPONIBLE, BLOQUEADO>VENDIDO, VENDIDO>DISPONIBLE, DISPONIBLE>RETENIDO, RETENIDO>DISPONIBLE, DISPONIBLE>INHABILITADO. VENDIDO nunca pasa a INHABILITADO.'
+}
+
+Table bloqueos {
+  id uuid [pk, note: 'bloqueoId']
+  cliente_id uuid [not null, note: 'Ref logica identidad.usuarios. Solo lo puede usar el cliente que lo creo']
+  evento_id uuid [not null, ref: > eventos_inventario.evento_id]
+  origen origen_bloqueo [not null, default: 'SOLICITUD_CLIENTE']
+  estado estado_bloqueo [not null, default: 'VIGENTE']
+  idempotency_key varchar(100) [unique, note: 'Header Idempotency-Key de crearBloqueo. NULL en bloqueos OFERTA_LISTA_ESPERA creados por Inventario']
+  creado_en timestamptz [not null, default: `now()`]
+  expira_en timestamptz [not null, note: '10 min SOLICITUD_CLIENTE; 15 min OFERTA_LISTA_ESPERA']
+  extension_pago_proceso_aplicada boolean [not null, default: false, note: 'PAGO_EN_PROCESO extiende 5 min una sola vez']
+  extension_revision_desde timestamptz [note: 'PAGO_EN_REVISION: inicio del maximo de 24 horas']
+  motivo_ultima_extension motivo_extension
+  reserva_id uuid [note: 'Ref logica reservas.reservas. Se fija al vender; la venta es idempotente por reserva']
+  motivo_liberacion motivo_liberacion
+  liberado_en timestamptz
+  vendido_en timestamptz
+  recuperado_tras_vencimiento boolean [not null, default: false]
+  motivo_anulacion_venta motivo_anulacion_venta
+  venta_anulada_en timestamptz
+
+  indexes {
+    (cliente_id, evento_id, estado)
+    (estado, expira_en) [name: 'ix_bloqueos_vencimiento', note: 'Job de expiracion: un bloqueo vencido nunca es VIGENTE aunque no se haya liberado fisicamente']
+    reserva_id
+  }
+
+  Note: 'Respalda el esquema Bloqueo de OpenAPI. Los items (zonaId, cantidad, asientoIds) se derivan de bloqueo_unidades + unidades_inventario.'
+}
+
+Table bloqueo_unidades {
+  bloqueo_id uuid [not null, ref: > bloqueos.id]
+  unidad_id uuid [not null, ref: > unidades_inventario.id]
+
+  indexes {
+    (bloqueo_id, unidad_id) [pk]
+    unidad_id
+  }
+
+  Note: 'Conserva que unidades pertenecieron a cada bloqueo, tambien tras liberacion o anulacion de venta.'
+}
+
+Table retenciones {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos_inventario.evento_id]
+  zona_id uuid [not null]
+  unidad_id uuid [not null, ref: > unidades_inventario.id]
+  organizador_id uuid [not null, note: 'Ref logica catalogo.organizadores']
+  retenido_por uuid [not null, note: 'Ref logica identidad.usuarios']
+  estado estado_retencion [not null, default: 'RETENIDA']
+  cortesia_reserva_id uuid [note: 'Ref logica reservas.reservas cuando se emite como cortesia']
+  retenido_en timestamptz [not null, default: `now()`]
+  cerrado_en timestamptz
+
+  indexes {
+    (evento_id, zona_id, estado)
+    unidad_id [name: 'ix_retencion_unidad', note: 'Crear UNICO PARCIAL (unidad_id) WHERE estado = RETENIDA']
+  }
+
+  Note: 'Hasta 10% de la capacidad ofrecida por zona. Un cupo retenido vuelve a venta mientras no sea cortesia; los no emitidos se liberan automaticamente 72 h antes del evento.'
+}
+
+Table lista_espera_solicitudes {
+  id uuid [pk]
+  evento_id uuid [not null, ref: > eventos_inventario.evento_id]
+  zona_id uuid [not null]
+  cliente_id uuid [not null]
+  cantidad smallint [not null, note: 'Entre 1 y 4, sin exceder el cupo restante del cliente (Reservas.cupo-compra)']
+  estado estado_solicitud_espera [not null, default: 'ACTIVA']
+  registrada_en timestamptz [not null, default: `now()`, note: 'Orden estricto por fecha y hora de registro']
+  cerrada_en timestamptz
+
+  indexes {
+    (evento_id, zona_id, estado, registrada_en) [name: 'ix_espera_orden']
+    (zona_id, cliente_id) [name: 'ix_espera_cliente', note: 'Crear UNICO PARCIAL (zona_id, cliente_id) WHERE estado IN (ACTIVA, OFERTADA): una solicitud activa por zona']
+  }
+
+  checks {
+    `cantidad between 1 and 4` [name: 'ck_espera_cantidad']
+  }
+}
+
+Table ofertas_lista_espera {
+  id uuid [pk]
+  solicitud_id uuid [not null, ref: > lista_espera_solicitudes.id]
+  bloqueo_id uuid [not null, unique, ref: - bloqueos.id, note: 'Bloqueo de 15 minutos con origen OFERTA_LISTA_ESPERA']
+  estado estado_oferta [not null, default: 'ACTIVA']
+  ofrecida_en timestamptz [not null, default: `now()`]
+  expira_en timestamptz [not null]
+  respondida_en timestamptz
+  reserva_id uuid [note: 'Ref logica reservas.reservas, cuando se acepta']
+
+  indexes {
+    (solicitud_id, estado)
+  }
+}

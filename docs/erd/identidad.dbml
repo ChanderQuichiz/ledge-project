@@ -1,0 +1,152 @@
+Project identidad {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio IDENTIDAD. HU-32, HU-34, HU-35 y OpenAPI identidad.
+  Una BD por microservicio: las referencias a otros servicios son logicas (sin FK).
+  '''
+}
+
+Enum estado_usuario {
+  PENDIENTE_VERIFICACION
+  ACTIVO
+  BLOQUEADO
+  ELIMINADO
+}
+
+Enum rol_usuario {
+  CLIENTE
+  ORGANIZADOR
+  STAFF_PUERTA
+  SOPORTE
+  ADMIN
+}
+
+Enum tipo_documento {
+  DNI
+  CARNE_EXTRANJERIA
+  PASAPORTE
+}
+
+Enum causal_bloqueo {
+  CONTRACARGOS_PERDIDOS
+  EXPIRACIONES_BLOQUEO
+  REVENTA_DETECTADA
+  FRAUDE_CONFIRMADO
+}
+
+Enum tipo_bloqueo {
+  TEMPORAL
+  PERMANENTE
+}
+
+Enum estado_bloqueo {
+  VIGENTE
+  VENCIDO
+  LEVANTADO
+}
+
+Enum estado_apelacion {
+  PENDIENTE
+  ACEPTADA
+  RECHAZADA
+}
+
+Table usuarios {
+  id uuid [pk, note: 'Es el clienteId / usuarioId de los OpenAPI']
+  correo varchar(254) [not null, note: 'Unico sin distinguir mayusculas (indice sobre lower(correo)). Al eliminar la cuenta se anonimiza']
+  nombre_completo varchar(200) [note: 'NULL cuando la cuenta esta ELIMINADA (anonimizada)']
+  fecha_nacimiento date [note: 'Solo mayores de 18 anios (HU-32). NULL si ELIMINADO']
+  contrasena_hash varchar(255) [note: 'NULL si ELIMINADO']
+  estado estado_usuario [not null, default: 'PENDIENTE_VERIFICACION']
+  correo_verificado boolean [not null, default: false]
+  correo_verificado_en timestamptz
+  documento_tipo tipo_documento [note: 'Requerido para emitir boleta (HU-32). Contacto.documento']
+  documento_numero varchar(20)
+  organizador_id uuid [note: 'Ref logica catalogo.organizadores. Solo si tiene rol ORGANIZADOR (EstadoCliente.organizadorId)']
+  creado_en timestamptz [not null, default: `now()`]
+  actualizado_en timestamptz [not null, default: `now()`]
+  eliminado_en timestamptz
+
+  indexes {
+    `lower(correo)` [unique, name: 'ux_usuarios_correo_ci']
+    estado
+    (documento_tipo, documento_numero)
+  }
+
+  Note: 'Los clientes con PENDIENTE_VERIFICACION cuyo correo no se verifica en 24 horas pierden su registro (se borra la fila, HU-32). Una cuenta con reservas pendientes o entradas validas de eventos futuros no puede pasar a ELIMINADO (lo valida el servicio).'
+}
+
+Table tokens_verificacion_correo {
+  id uuid [pk]
+  usuario_id uuid [not null, ref: > usuarios.id]
+  token_hash varchar(128) [not null, unique]
+  expira_en timestamptz [not null, note: 'creado_en + 24 horas']
+  usado_en timestamptz
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    usuario_id
+    expira_en
+  }
+}
+
+Table usuario_roles {
+  usuario_id uuid [not null, ref: > usuarios.id]
+  rol rol_usuario [not null]
+  asignado_por uuid [note: 'NULL si lo asigna el sistema (rol CLIENTE al registrarse)']
+  asignado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (usuario_id, rol) [pk]
+  }
+}
+
+Table bloqueos_cliente {
+  id uuid [pk]
+  usuario_id uuid [not null, ref: > usuarios.id]
+  causal causal_bloqueo [not null]
+  tipo tipo_bloqueo [not null]
+  hasta timestamptz [note: 'Fin del bloqueo TEMPORAL (24 horas). NULL si PERMANENTE']
+  motivo text [not null, note: 'Obligatorio e informado al cliente (HU-34)']
+  estado estado_bloqueo [not null, default: 'VIGENTE']
+  creado_por uuid [note: 'NULL = actor SISTEMA']
+  creado_en timestamptz [not null, default: `now()`]
+  levantado_por uuid [note: 'Solo un ADMIN puede desbloquear']
+  levantado_motivo text [note: 'Obligatorio al desbloquear']
+  levantado_en timestamptz
+
+  indexes {
+    (usuario_id, estado)
+  }
+
+  Note: 'Fuente de EstadoCliente.bloqueo {tipo, hasta, motivo}. Mientras haya un bloqueo VIGENTE, usuarios.estado = BLOQUEADO.'
+}
+
+Table apelaciones_bloqueo {
+  id uuid [pk]
+  bloqueo_id uuid [not null, unique, ref: - bloqueos_cliente.id, note: 'Una sola apelacion por bloqueo']
+  motivo text [not null]
+  presentada_en timestamptz [not null, default: `now()`]
+  plazo_hasta timestamptz [not null, note: 'bloqueo.creado_en + 15 dias']
+  estado estado_apelacion [not null, default: 'PENDIENTE']
+  resuelta_por uuid [note: 'Un ADMIN']
+  resolucion_motivo text
+  resuelta_en timestamptz
+}
+
+Table asignaciones_puerta {
+  id uuid [pk]
+  evento_id uuid [not null, note: 'Ref logica catalogo.eventos']
+  usuario_id uuid [not null, ref: > usuarios.id, note: 'Debe tener rol STAFF_PUERTA']
+  organizador_id uuid [not null, note: 'Organizador que asigna (solo sobre sus eventos)']
+  asignado_por uuid [not null, note: 'usuario organizador que realizo la asignacion']
+  creado_en timestamptz [not null, default: `now()`]
+  revocado_en timestamptz
+
+  indexes {
+    (usuario_id, evento_id) [unique]
+    evento_id
+  }
+
+  Note: 'Respalda AsignacionPuerta.asignado. La ventana horaria (2 h antes del inicio a 2 h despues del fin) la evalua Entradas.'
+}

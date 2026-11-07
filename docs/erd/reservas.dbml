@@ -1,0 +1,256 @@
+Project reservas {
+  database_type: 'PostgreSQL'
+  Note: '''
+  Microservicio RESERVAS. HU-09, HU-14 a HU-18, HU-26, HU-27, HU-28, HU-33 y OpenAPI reservas.
+  Importes en soles (PEN), decimal(12,2). Referencias a otros servicios: logicas (sin FK).
+  El cupo de compra (CupoCompra) y las liquidables (ResumenLiquidacionEvento) se derivan de estas tablas.
+  '''
+}
+
+Enum estado_reserva {
+  PENDIENTE_PAGO
+  CONFIRMADA
+  EXPIRADA
+  CANCELADA
+  CANCELADA_POR_EVENTO
+  FINALIZADA
+}
+
+Enum fase_venta {
+  PREVENTA
+  GENERAL
+  ULTIMA_HORA
+}
+
+Enum tipo_actor {
+  CLIENTE
+  ORGANIZADOR
+  SOPORTE
+  ADMIN
+  SISTEMA
+}
+
+Enum tipo_cancelacion {
+  CANCELACION_CLIENTE
+  REEMBOLSO_REPROGRAMACION
+}
+
+Enum tipo_cupon {
+  PORCENTAJE
+  MONTO_FIJO
+}
+
+Enum alcance_cupon {
+  GLOBAL
+  ORGANIZADOR
+  EVENTO
+  ZONA
+}
+
+Enum financiado_por {
+  PLATAFORMA
+  ORGANIZADOR
+}
+
+Enum estado_cupon {
+  ACTIVO
+  INACTIVO
+  AGOTADO
+  VENCIDO
+}
+
+Enum estado_uso_cupon {
+  RESERVADO
+  CONSUMIDO
+  DEVUELTO
+}
+
+Table reservas {
+  id uuid [pk]
+  codigo varchar(20) [not null, unique, note: 'Codigo unico y legible']
+  cliente_id uuid [not null, note: 'Ref logica identidad.usuarios']
+  evento_id uuid [not null, note: 'Ref logica catalogo.eventos. Una reserva pertenece a un solo evento']
+  estado estado_reserva [not null, default: 'PENDIENTE_PAGO']
+  es_cortesia boolean [not null, default: false, note: 'Cortesia (HU-13): total 0, sin cargo ni IGV, no cuenta para el limite de compra ni para liquidacion']
+  emitida_por uuid [note: 'Organizador que emite la cortesia']
+  bloqueo_id uuid [not null, unique, note: 'Ref logica inventario.bloqueos']
+  bloqueo_expira_en timestamptz [not null, note: 'bloqueoExpiraEn. bloqueoVigente se consulta a Inventario']
+  cantidad_entradas integer [not null]
+  moneda char(3) [not null, default: 'PEN']
+  subtotal_entradas decimal(12,2) [not null, note: 'Desglose congelado al crear la reserva']
+  descuento decimal(12,2) [not null, default: 0]
+  descuento_financiado_organizador decimal(12,2) [not null, default: 0, note: 'Reduce la base de comision y la liquidacion']
+  descuento_financiado_plataforma decimal(12,2) [not null, default: 0, note: 'No reduce la base de comision']
+  cargo_servicio decimal(12,2) [not null, default: 0]
+  igv_incluido decimal(12,2) [not null, default: 0]
+  total decimal(12,2) [not null, note: 'subtotal - descuento + cargo por servicio (IGV incluido)']
+  evento_exonerado boolean [not null, default: false]
+  declaro_mayores_edad boolean [not null, default: false, note: 'Obligatorio en eventos +18']
+  creada_en timestamptz [not null, default: `now()`]
+  confirmada_en timestamptz
+  expirada_en timestamptz
+  cancelada_en timestamptz
+  finalizada_en timestamptz
+  actualizada_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (cliente_id, evento_id, estado) [name: 'ix_reservas_cupo']
+    (cliente_id, estado) [name: 'ix_reservas_pendientes_cliente']
+    (evento_id, estado) [name: 'ix_reservas_liquidacion']
+    (estado, bloqueo_expira_en)
+  }
+
+  checks {
+    `cantidad_entradas >= 1` [name: 'ck_reservas_cantidad']
+    `total >= 0` [name: 'ck_reservas_total']
+    `descuento <= subtotal_entradas` [name: 'ck_reservas_descuento']
+    `descuento = descuento_financiado_organizador + descuento_financiado_plataforma` [name: 'ck_reservas_descuento_split']
+    `moneda = 'PEN'` [name: 'ck_reservas_moneda']
+  }
+
+  Note: 'Un cliente puede tener maximo 3 reservas PENDIENTE_PAGO simultaneas entre todos los eventos (HU-33, validado por el servicio). Un organizador no puede reservar sus propios eventos.'
+}
+
+Table reserva_lineas {
+  id uuid [pk]
+  reserva_id uuid [not null, ref: > reservas.id]
+  zona_id uuid [not null, note: 'Ref logica catalogo.zonas_sede']
+  fase_venta fase_venta [not null]
+  cantidad integer [not null]
+  precio_unitario decimal(12,2) [not null, note: 'Congelado (incluye tarifa dinamica vigente)']
+  subtotal_entradas decimal(12,2) [not null]
+  descuento decimal(12,2) [not null, default: 0]
+  cargo_servicio decimal(12,2) [not null, default: 0]
+  igv_incluido decimal(12,2) [not null, default: 0]
+  total decimal(12,2) [not null, note: 'Redondeo half-up por linea']
+
+  indexes {
+    (reserva_id, zona_id) [unique]
+  }
+
+  checks {
+    `cantidad >= 1` [name: 'ck_lineas_cantidad']
+  }
+
+  Note: 'Resultado de cotizarEntradas (Catalogo) por zona, congelado en la reserva.'
+}
+
+Table reserva_entradas {
+  id uuid [pk]
+  reserva_id uuid [not null, ref: > reservas.id]
+  evento_id uuid [not null, note: 'Denormalizado para el unico de documento por evento']
+  posicion integer [not null, note: 'Posicion 1..n de la entrada dentro de la reserva']
+  zona_id uuid [not null]
+  asiento_id uuid [note: 'Solo zonas NUMERADAS']
+  asistente_nombre varchar(200) [note: 'Obligatorio en eventos nominativos y en cortesias']
+  asistente_documento_tipo varchar(20) [note: 'DNI, CARNE_EXTRANJERIA o PASAPORTE']
+  asistente_documento_numero varchar(20)
+  ocupa_documento boolean [not null, default: true, note: 'false cuando la reserva queda EXPIRADA/CANCELADA']
+
+  indexes {
+    (reserva_id, posicion) [unique]
+    (evento_id, asistente_documento_tipo, asistente_documento_numero) [name: 'ix_reserva_entradas_doc', note: 'Crear UNICO PARCIAL WHERE ocupa_documento AND asistente_documento_numero IS NOT NULL: un documento no figura en mas de una entrada del evento']
+  }
+}
+
+Table reserva_transiciones {
+  id uuid [pk]
+  reserva_id uuid [not null, ref: > reservas.id]
+  estado_anterior estado_reserva
+  estado_nuevo estado_reserva [not null]
+  actor_tipo tipo_actor [not null]
+  actor_id uuid [note: 'NULL si actor SISTEMA']
+  motivo varchar(300) [not null]
+  ocurrida_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (reserva_id, ocurrida_en)
+  }
+
+  Note: 'Cada transicion registra fecha, actor y motivo (HU-15). Solo transiciones validas: PENDIENTE_PAGO a CONFIRMADA/EXPIRADA/CANCELADA; CONFIRMADA a CANCELADA/CANCELADA_POR_EVENTO/FINALIZADA.'
+}
+
+Table cancelaciones_reserva {
+  id uuid [pk]
+  reserva_id uuid [not null, unique, ref: - reservas.id, note: 'Una reserva se cancela/reembolsa una sola vez']
+  tipo tipo_cancelacion [not null]
+  politica_aplicada varchar(20) [not null, note: 'ESTANDAR, FLEXIBLE o NO_REEMBOLSABLE (fijada en el evento)']
+  horas_anticipacion decimal(8,2) [not null, note: 'Horas entre la solicitud y el inicio del evento']
+  monto_pagado decimal(12,2) [not null]
+  monto_reembolso decimal(12,2) [not null, note: 'Nunca supera el monto pagado']
+  cargo_servicio_devuelto boolean [not null, note: 'false en cancelacion voluntaria; true en reprogramacion']
+  solicitada_en timestamptz [not null, default: `now()`]
+  reembolso_solicitado_en timestamptz [note: 'Cuando se emitio el evento de reembolso solicitado hacia Pagos']
+
+  Note: 'HU-26 (cancelacion voluntaria) y HU-28 (reembolso por reprogramacion, plazo 7 dias o hasta 24 h antes de la nueva fecha, una sola vez).'
+}
+
+Table contadores_expiracion {
+  id uuid [pk]
+  cliente_id uuid [not null]
+  evento_id uuid [not null]
+  expiraciones_consecutivas smallint [not null, default: 0, note: 'Una cancelacion voluntaria no cuenta como expiracion']
+  restringido_hasta timestamptz [note: '3 expiraciones seguidas: no puede crear reservas del evento por 30 minutos']
+  actualizado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    (cliente_id, evento_id) [unique]
+  }
+}
+
+Table cupones {
+  id uuid [pk]
+  codigo varchar(20) [not null, note: 'Alfanumerico de 4 a 20; unico sin distinguir mayusculas (indice lower(codigo))']
+  tipo tipo_cupon [not null]
+  valor decimal(12,2) [not null, note: 'PORCENTAJE entre 1 y 100; MONTO_FIJO mayor a 0']
+  vigencia_inicio timestamptz [not null]
+  vigencia_fin timestamptz [not null]
+  alcance alcance_cupon [not null, default: 'GLOBAL']
+  organizador_id uuid [note: 'Si alcance = ORGANIZADOR o creado por un organizador']
+  evento_id uuid [note: 'Si alcance = EVENTO']
+  zona_id uuid [note: 'Si alcance = ZONA']
+  limite_usos_total integer [not null]
+  limite_usos_por_cliente integer [not null]
+  usos_comprometidos integer [not null, default: 0, note: 'RESERVADO + CONSUMIDO. Actualizacion atomica: si dos clientes compiten por el ultimo uso solo uno lo obtiene']
+  monto_minimo_compra decimal(12,2)
+  tope_maximo_descuento decimal(12,2)
+  financiado_por financiado_por [not null, note: 'Un organizador solo crea cupones financiados por el']
+  es_primera_compra boolean [not null, default: false, note: 'Solo clientes sin compras confirmadas']
+  estado estado_cupon [not null, default: 'ACTIVO']
+  creado_por uuid [not null]
+  creado_en timestamptz [not null, default: `now()`]
+
+  indexes {
+    `lower(codigo)` [unique, name: 'ux_cupones_codigo_ci']
+    (estado, vigencia_fin)
+  }
+
+  checks {
+    `vigencia_fin > vigencia_inicio` [name: 'ck_cupones_vigencia']
+    `(tipo = 'PORCENTAJE' and valor between 1 and 100) or (tipo = 'MONTO_FIJO' and valor > 0)` [name: 'ck_cupones_valor']
+    `codigo ~ '^[A-Za-z0-9]{4,20}$'` [name: 'ck_cupones_codigo']
+  }
+
+  Note: 'Un cupon con usos registrados no se elimina, solo se desactiva.'
+}
+
+Table cupon_usos {
+  id uuid [pk]
+  cupon_id uuid [not null, ref: > cupones.id]
+  reserva_id uuid [not null, unique, ref: - reservas.id, note: 'Una reserva admite un solo cupon']
+  cliente_id uuid [not null]
+  estado estado_uso_cupon [not null, default: 'RESERVADO', note: 'Se reserva al aplicar y se consume al confirmar la reserva']
+  descuento_aplicado decimal(12,2) [not null, note: 'Calculado sobre el subtotal de entradas, nunca sobre el cargo por servicio']
+  financiado_por financiado_por [not null]
+  reservado_en timestamptz [not null, default: `now()`]
+  consumido_en timestamptz
+  devuelto_en timestamptz [note: 'Reserva expirada/cancelada antes de pagar, o evento cancelado']
+  motivo_devolucion varchar(40) [note: 'EXPIRACION, CANCELACION_PENDIENTE o EVENTO_CANCELADO']
+  reactivado_hasta timestamptz [note: 'Evento cancelado: cupon reactivado para ese cliente por 30 dias adicionales']
+
+  indexes {
+    (cupon_id, cliente_id, estado)
+  }
+
+  Note: 'Si el cliente cancela una reserva ya pagada, o hay contracargo o fraude confirmado, el uso queda CONSUMIDO.'
+}
