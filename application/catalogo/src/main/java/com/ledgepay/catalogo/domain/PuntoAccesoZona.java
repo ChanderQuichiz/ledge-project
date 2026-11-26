@@ -25,6 +25,15 @@ public UUID getPuntoAccesoId() {
         return zonaId;
     }
 
+    public static PuntoAccesoZona reconstruir(UUID puntoAccesoId, UUID zonaId,
+            PuntoAccesoSede puntoAcceso, ZonaSede zona) {
+        PuntoAccesoZona relacion = new PuntoAccesoZona();
+        relacion.puntoAccesoId = puntoAccesoId;
+        relacion.zonaId = zonaId;
+        relacion.puntoAcceso = puntoAcceso;
+        relacion.zona = zona;
+        return relacion;
+    }
 
 }
 

@@ -1,4 +1,5 @@
 package com.ledgepay.catalogo.domain;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -80,6 +81,8 @@ public void desactivar() {
 		zona.tipo = tipo;
 		zona.capacidad = capacidad;
 		zona.activa = true;
+		zona.asientos = new ArrayList<>();
+		zona.puntosAcceso = new ArrayList<>();
 
 		return zona;
 	}
@@ -88,6 +91,20 @@ public void desactivar() {
 	public void definirAsientos(List<AsientoZona> asientos) {
 		this.asientos = asientos;
 		unicidadDeAsientos();
+	}
+
+	public static ZonaSede reconstruir(UUID id, UUID sedeId, String nombre, TipoZona tipo, Integer capacidad,
+			Boolean activa, List<AsientoZona> asientos, List<PuntoAccesoZona> puntosAcceso) {
+		ZonaSede zona = new ZonaSede();
+		zona.id = id;
+		zona.sedeId = sedeId;
+		zona.nombre = nombre;
+		zona.tipo = tipo;
+		zona.capacidad = capacidad;
+		zona.activa = activa;
+		zona.asientos = asientos != null ? new ArrayList<>(asientos) : new ArrayList<>();
+		zona.puntosAcceso = puntosAcceso != null ? new ArrayList<>(puntosAcceso) : new ArrayList<>();
+		return zona;
 	}
 
 }

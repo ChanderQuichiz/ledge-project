@@ -2,6 +2,8 @@ package com.ledgepay.catalogo.application.usecases;
 
 import java.util.UUID;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ledgepay.catalogo.application.command.EliminarSedeCommand;
 import com.ledgepay.catalogo.application.exceptions.SedeNotFoundException;
 import com.ledgepay.catalogo.domain.Evento;
@@ -19,6 +21,7 @@ public class EliminarSedeUseCase {
         this.sedeRepository = sedeRepository;
         this.eventoRepository = eventoRepository;
     }
+    @Transactional
     public void execute(EliminarSedeCommand command) {
         // Lógica para eliminar la sede con el ID proporcionado en el comando
         // Por ejemplo, podrías llamar a un repositorio para eliminar la sede de la base de datos

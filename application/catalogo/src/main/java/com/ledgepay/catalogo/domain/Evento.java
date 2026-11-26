@@ -141,6 +141,73 @@ public List<FaseVenta> getFasesVenta() {
     // 4. Punto de entrada para la capa de Infraestructura (Mappers de BD -> Dominio)
   
 
+    private Evento(UUID id, UUID organizadorId, UUID sedeId, String nombre, String descripcion,
+                   String categoria, RestriccionEdad restriccionEdad, PoliticaCancelacion politicaCancelacion,
+                   Boolean permiteReingreso, Integer maxReingresos, Boolean esNominativo, Boolean esExonerado,
+                   Integer limiteCompraPorCliente, EstadoEvento estado, LocalDateTime fechaInicio,
+                   LocalDateTime fechaFin, LocalDateTime aperturaPuertas, LocalDateTime inicioVenta,
+                   LocalDateTime finVenta, BigDecimal cargoServicioPorcentaje, BigDecimal cargoServicioMinimo,
+                   BigDecimal cargoServicioMaximo, BigDecimal porcentajeComision, Integer numeroReprogramaciones,
+                   LocalDateTime publicadoEn, LocalDateTime canceladoEn, String motivoCancelacion,
+                   BigDecimal penalizacionCancelacionPorcentaje, UUID creadoPor, LocalDateTime creadoEn,
+                   LocalDateTime actualizadoEn, Organizador organizador, Sede sede, List<FaseVenta> fasesVenta) {
+        this.id = id;
+        this.organizadorId = organizadorId;
+        this.sedeId = sedeId;
+        this.nombre = nombre;
+        this.descripcion = descripcion;
+        this.categoria = categoria;
+        this.restriccionEdad = restriccionEdad;
+        this.politicaCancelacion = politicaCancelacion;
+        this.permiteReingreso = permiteReingreso;
+        this.maxReingresos = maxReingresos;
+        this.esNominativo = esNominativo;
+        this.esExonerado = esExonerado;
+        this.limiteCompraPorCliente = limiteCompraPorCliente;
+        this.estado = estado;
+        this.fechaInicio = fechaInicio;
+        this.fechaFin = fechaFin;
+        this.aperturaPuertas = aperturaPuertas;
+        this.inicioVenta = inicioVenta;
+        this.finVenta = finVenta;
+        this.cargoServicioPorcentaje = cargoServicioPorcentaje;
+        this.cargoServicioMinimo = cargoServicioMinimo;
+        this.cargoServicioMaximo = cargoServicioMaximo;
+        this.porcentajeComision = porcentajeComision;
+        this.numeroReprogramaciones = numeroReprogramaciones;
+        this.publicadoEn = publicadoEn;
+        this.canceladoEn = canceladoEn;
+        this.motivoCancelacion = motivoCancelacion;
+        this.penalizacionCancelacionPorcentaje = penalizacionCancelacionPorcentaje;
+        this.creadoPor = creadoPor;
+        this.creadoEn = creadoEn;
+        this.actualizadoEn = actualizadoEn;
+        this.organizador = organizador;
+        this.sede = sede;
+        this.fasesVenta = fasesVenta;
+    }
+
+    public static Evento reconstruir(UUID id, UUID organizadorId, UUID sedeId, String nombre, String descripcion,
+                                     String categoria, RestriccionEdad restriccionEdad,
+                                     PoliticaCancelacion politicaCancelacion, Boolean permiteReingreso,
+                                     Integer maxReingresos, Boolean esNominativo, Boolean esExonerado,
+                                     Integer limiteCompraPorCliente, EstadoEvento estado, LocalDateTime fechaInicio,
+                                     LocalDateTime fechaFin, LocalDateTime aperturaPuertas, LocalDateTime inicioVenta,
+                                     LocalDateTime finVenta, BigDecimal cargoServicioPorcentaje,
+                                     BigDecimal cargoServicioMinimo, BigDecimal cargoServicioMaximo,
+                                     BigDecimal porcentajeComision, Integer numeroReprogramaciones,
+                                     LocalDateTime publicadoEn, LocalDateTime canceladoEn, String motivoCancelacion,
+                                     BigDecimal penalizacionCancelacionPorcentaje, UUID creadoPor,
+                                     LocalDateTime creadoEn, LocalDateTime actualizadoEn, Organizador organizador,
+                                     Sede sede, List<FaseVenta> fasesVenta) {
+        return new Evento(id, organizadorId, sedeId, nombre, descripcion, categoria, restriccionEdad,
+            politicaCancelacion, permiteReingreso, maxReingresos, esNominativo, esExonerado,
+            limiteCompraPorCliente, estado, fechaInicio, fechaFin, aperturaPuertas, inicioVenta, finVenta,
+            cargoServicioPorcentaje, cargoServicioMinimo, cargoServicioMaximo, porcentajeComision,
+            numeroReprogramaciones, publicadoEn, canceladoEn, motivoCancelacion,
+            penalizacionCancelacionPorcentaje, creadoPor, creadoEn, actualizadoEn, organizador, sede, fasesVenta);
+    }
+
 public void sinEventoPublicadoPendiente(){
     
     if(this.estado == EstadoEvento.PUBLICADO && LocalDateTime.now().isBefore(this.fechaInicio)) {

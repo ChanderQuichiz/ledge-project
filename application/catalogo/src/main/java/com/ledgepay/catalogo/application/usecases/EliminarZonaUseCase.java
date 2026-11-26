@@ -2,6 +2,8 @@ package com.ledgepay.catalogo.application.usecases;
 
 import java.util.UUID;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ledgepay.catalogo.application.command.EliminarZonaCommand;
 import com.ledgepay.catalogo.application.exceptions.SedeNotFoundException;
 import com.ledgepay.catalogo.domain.Evento;
@@ -25,6 +27,7 @@ public EliminarZonaUseCase(ZonaSedeRepository zonaRepository, EventoRepository e
         this.sedeRepository = sedeRepository;
     }
 
+    @Transactional
     public void execute(EliminarZonaCommand command) {
         // Lógica para eliminar la zona con el ID proporcionado en el comando.
         // Por ejemplo, podrías llamar a un repositorio para eliminar la zona de la base de datos.

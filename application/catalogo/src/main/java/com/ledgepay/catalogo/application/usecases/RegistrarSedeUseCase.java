@@ -1,5 +1,7 @@
 package com.ledgepay.catalogo.application.usecases;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ledgepay.catalogo.application.command.RegistrarSedeCommand;
 import com.ledgepay.catalogo.application.result.RegistrarSedeResult;
 import com.ledgepay.catalogo.domain.Sede;
@@ -12,6 +14,7 @@ public RegistrarSedeUseCase(SedeRepository sedeRepository) {
         this.sedeRepository = sedeRepository;
     }
 
+    @Transactional
     public RegistrarSedeResult execute(RegistrarSedeCommand command) {
         // Lógica para registrar la sede
   

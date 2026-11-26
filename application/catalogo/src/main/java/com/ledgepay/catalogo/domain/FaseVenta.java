@@ -43,8 +43,18 @@ public class FaseVenta{
         this.fase = Fase.GENERAL;
     }
 
-
-
+    public static FaseVenta reconstruir(UUID id, UUID eventoId, Fase fase, LocalDateTime iniciaEn,
+            LocalDateTime terminaEn, Boolean accesoRestringido, String codigoAccesoHash) {
+        FaseVenta faseVenta = new FaseVenta();
+        faseVenta.id = id;
+        faseVenta.eventoId = eventoId;
+        faseVenta.fase = fase;
+        faseVenta.iniciaEn = iniciaEn;
+        faseVenta.terminaEn = terminaEn;
+        faseVenta.accesoRestringido = accesoRestringido;
+        faseVenta.codigoAccesoHash = codigoAccesoHash;
+        return faseVenta;
+    }
 
 }
 

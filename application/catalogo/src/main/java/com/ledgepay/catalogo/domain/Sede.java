@@ -1,6 +1,7 @@
 package com.ledgepay.catalogo.domain;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -90,6 +91,8 @@ public Sede(UUID id, String nombre, String direccion, String ciudad, Integer afo
         this.aforoMaximoLegal = aforoMaximoLegal;
         this.activa = activa;
         this.creadoEn = creadoEn;
+        this.zonas = zonas != null ? new ArrayList<>(zonas) : new ArrayList<>();
+        this.puntosAcceso = puntosAcceso != null ? new ArrayList<>(puntosAcceso) : new ArrayList<>();
     }
 
     public UUID getId() {

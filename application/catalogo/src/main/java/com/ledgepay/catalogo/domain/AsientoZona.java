@@ -42,7 +42,14 @@ private AsientoZona(UUID id, UUID zonaId, String fila, Integer numero, Boolean a
 	public Boolean getHabilitado() {
 		return habilitado;
 	}
-	public MotivoInhabilitacionAsiento getMotivoInhabilitacion() {
-		return motivoInhabilitacion;
-	}
+    public MotivoInhabilitacionAsiento getMotivoInhabilitacion() {
+        return motivoInhabilitacion;
+    }
+
+    public static AsientoZona reconstruir(UUID id, UUID zonaId, String fila, Integer numero,
+            Boolean accesible, Boolean habilitado, MotivoInhabilitacionAsiento motivoInhabilitacion) {
+        AsientoZona asiento = new AsientoZona(id, zonaId, fila, numero, accesible, habilitado);
+        asiento.motivoInhabilitacion = motivoInhabilitacion;
+        return asiento;
+    }
 }

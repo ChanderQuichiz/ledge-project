@@ -15,6 +15,13 @@ public class PuntoAccesoSede {
     public String getNombre() {
         return nombre;
     }
-  
+
+    public static PuntoAccesoSede reconstruir(UUID id, UUID sedeId, String nombre) {
+        PuntoAccesoSede punto = new PuntoAccesoSede();
+        punto.id = id;
+        punto.sedeId = sedeId;
+        punto.nombre = nombre;
+        return punto;
+    }
 }
   

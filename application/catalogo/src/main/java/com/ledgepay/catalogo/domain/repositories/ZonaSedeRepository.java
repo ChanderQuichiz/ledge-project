@@ -9,6 +9,8 @@ public interface ZonaSedeRepository {
 
     Optional<ZonaSede> findById(UUID fromString);
 
+    void save(ZonaSede zona);
+
     void delete(ZonaSede zona);
     
 }

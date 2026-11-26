@@ -2,6 +2,8 @@ package com.ledgepay.catalogo.application.usecases;
 
 import java.util.UUID;
 
+import org.springframework.transaction.annotation.Transactional;
+
 import com.ledgepay.catalogo.application.command.RegistrarZonaCommand;
 import com.ledgepay.catalogo.application.exceptions.SedeNotFoundException;
 import com.ledgepay.catalogo.application.result.RegistrarZonaResult;
@@ -15,6 +17,7 @@ public class RegistrarZonaUseCase {
     public RegistrarZonaUseCase(SedeRepository sedeRepository) {
         this.sedeRepository = sedeRepository;
     }
+    @Transactional
     public RegistrarZonaResult execute(RegistrarZonaCommand command) {
         // Implement the logic to register a zone here
 
@@ -24,6 +27,8 @@ public class RegistrarZonaUseCase {
                 ZonaSede zona = ZonaSede.crear(UUID.fromString(command.sedeId()), command.nombre(), TipoZona.valueOf(command.tipo()), command.capacidad());
 
         sede.RegistrarZona(zona);
+
+        sedeRepository.save(sede);
 
    return new RegistrarZonaResult(
             zona.getId().toString(),
