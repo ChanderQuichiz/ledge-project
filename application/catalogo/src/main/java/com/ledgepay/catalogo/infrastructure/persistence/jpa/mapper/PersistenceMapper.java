@@ -7,6 +7,7 @@ import java.util.List;
 import com.ledgepay.catalogo.domain.AsientoZona;
 import com.ledgepay.catalogo.domain.Evento;
 import com.ledgepay.catalogo.domain.FaseVenta;
+import com.ledgepay.catalogo.domain.Organizador;
 import com.ledgepay.catalogo.domain.PuntoAccesoSede;
 import com.ledgepay.catalogo.domain.PuntoAccesoZona;
 import com.ledgepay.catalogo.domain.Sede;
@@ -14,6 +15,7 @@ import com.ledgepay.catalogo.domain.ZonaSede;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.AsientoZonaEntity;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.EventoEntity;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.FaseVentaEntity;
+import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.OrganizadorEntity;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.PuntoAccesoSedeEntity;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.PuntoAccesoZonaEntity;
 import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.SedeEntity;
@@ -272,6 +274,15 @@ public final class PersistenceMapper {
         entity.setAccesoRestringido(domain.getAccesoRestringido() != null ? domain.getAccesoRestringido() : false);
         entity.setCodigoAccesoHash(domain.getCodigoAccesoHash());
         return entity;
+    }
+
+    public static Organizador toDomain(OrganizadorEntity entity) {
+        if (entity == null) {
+            return null;
+        }
+        return new Organizador(entity.getId(), entity.getRuc(), entity.getRazonSocial(), entity.getEstado(),
+            entity.getPorcentajeComision(), entity.getVerificadoPor(), entity.getVerificadoEn(),
+            entity.getCreadoEn(), entity.getActualizadoEn());
     }
 
     private static BigDecimal valueOrDefault(BigDecimal value, BigDecimal defaultValue) {

@@ -1,5 +1,6 @@
 package com.ledgepay.catalogo.infrastructure.persistence.jpa.repository;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -10,4 +11,6 @@ import com.ledgepay.catalogo.infrastructure.persistence.jpa.entity.EventoEntity;
 public interface EventoJpaRepository extends JpaRepository<EventoEntity, UUID> {
 
     Optional<EventoEntity> findBySedeId(UUID sedeId);
+
+    List<EventoEntity> findAllBySedeId(UUID sedeId);
 }

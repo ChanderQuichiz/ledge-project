@@ -6,8 +6,13 @@ import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import com.ledgepay.catalogo.application.command.FechaEventoSuperpuestaException;
+import com.ledgepay.catalogo.application.exceptions.DeudaVencidaException;
 import com.ledgepay.catalogo.application.exceptions.EntradasConsultaException;
 import com.ledgepay.catalogo.application.exceptions.DesactivacionSedeInvalida;
+import com.ledgepay.catalogo.application.exceptions.OrganizadorNoVerificadoException;
+import com.ledgepay.catalogo.application.exceptions.OrganizadorNotFoundException;
+import com.ledgepay.catalogo.application.exceptions.PagosConsultaException;
 import com.ledgepay.catalogo.application.exceptions.PreventaVigenteException;
 import com.ledgepay.catalogo.application.exceptions.SedeNotFoundException;
 import com.ledgepay.catalogo.domain.exceptions.AforoInsuficienteException;
@@ -27,6 +32,30 @@ public class ApiExceptionHandler extends ResponseEntityExceptionHandler {
     @ExceptionHandler(SedeNotFoundException.class)
     ProblemDetail sedeNoEncontrada(SedeNotFoundException exception) {
         return problem(HttpStatus.NOT_FOUND, "Sede no encontrada", exception.getMessage(), "SEDE_NO_ENCONTRADA");
+    }
+
+    @ExceptionHandler(OrganizadorNotFoundException.class)
+    ProblemDetail organizadorNoEncontrado(OrganizadorNotFoundException exception) {
+        return problem(HttpStatus.NOT_FOUND, "Organizador no encontrado", exception.getMessage(), "ORGANIZADOR_NO_ENCONTRADO");
+    }
+
+    @ExceptionHandler({ DeudaVencidaException.class, OrganizadorNoVerificadoException.class })
+    ProblemDetail organizadorNoHabilitado(RuntimeException exception) {
+        String codigo = exception instanceof DeudaVencidaException
+            ? "ORGANIZADOR_CON_DEUDAS"
+            : "ORGANIZADOR_NO_VERIFICADO";
+        return problem(HttpStatus.UNPROCESSABLE_CONTENT, "Organizador no habilitado", exception.getMessage(), codigo);
+    }
+
+    @ExceptionHandler(FechaEventoSuperpuestaException.class)
+    ProblemDetail fechaEventoSuperpuesta(FechaEventoSuperpuestaException exception) {
+        return problem(HttpStatus.CONFLICT, "Sede ocupada", exception.getMessage(), "SEDE_OCUPADA");
+    }
+
+    @ExceptionHandler(PagosConsultaException.class)
+    ProblemDetail pagosNoDisponibles(PagosConsultaException exception) {
+        return problem(HttpStatus.BAD_GATEWAY, "Servicio de pagos no disponible", exception.getMessage(),
+            "PAGOS_NO_DISPONIBLES");
     }
 
     @ExceptionHandler(ZonaNotFoundException.class)
