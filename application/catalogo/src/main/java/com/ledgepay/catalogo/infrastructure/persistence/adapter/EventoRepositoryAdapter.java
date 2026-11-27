@@ -1,5 +1,6 @@
 package com.ledgepay.catalogo.infrastructure.persistence.adapter;
 
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -32,5 +33,10 @@ public class EventoRepositoryAdapter implements EventoRepository {
     @Override
     public Optional<Evento> findBySedeId(UUID sedeId) {
         return eventoJpaRepository.findBySedeId(sedeId).map(PersistenceMapper::toDomain);
+    }
+
+    @Override
+    public List<Evento> findAllBySedeId(UUID sedeId) {
+        return eventoJpaRepository.findAllBySedeId(sedeId).stream().map(PersistenceMapper::toDomain).toList();
     }
 }

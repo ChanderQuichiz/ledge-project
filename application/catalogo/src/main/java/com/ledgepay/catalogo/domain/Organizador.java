@@ -16,6 +16,21 @@ public class Organizador {
     private LocalDateTime verificadoEn;
     private LocalDateTime creadoEn;
     private LocalDateTime actualizadoEn;
+
+    public Organizador(UUID id, String ruc, String razonSocial, EstadoOrganizador estado,
+                       BigDecimal porcentajeComision, UUID verificadoPor, LocalDateTime verificadoEn,
+                       LocalDateTime creadoEn, LocalDateTime actualizadoEn) {
+        this.id = id;
+        this.ruc = ruc;
+        this.razonSocial = razonSocial;
+        this.estado = estado;
+        this.porcentajeComision = porcentajeComision;
+        this.verificadoPor = verificadoPor;
+        this.verificadoEn = verificadoEn;
+        this.creadoEn = creadoEn;
+        this.actualizadoEn = actualizadoEn;
+    }
+
 	public UUID getId() {
 		return id;
 	}
@@ -43,5 +58,8 @@ public class Organizador {
 	public LocalDateTime getActualizadoEn() {
 		return actualizadoEn;
 	}
+
+
+	
 }
 

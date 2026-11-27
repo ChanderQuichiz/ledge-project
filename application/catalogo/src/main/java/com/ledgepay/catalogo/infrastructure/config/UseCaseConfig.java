@@ -6,6 +6,7 @@ import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.ledgepay.catalogo.application.port.out.EntradasClient;
+import com.ledgepay.catalogo.application.port.out.PagosPort;
 import com.ledgepay.catalogo.application.usecases.DefinirAsientoUseCase;
 import com.ledgepay.catalogo.application.usecases.DesactivarSedeUseCase;
 import com.ledgepay.catalogo.application.usecases.DesactivarZonaUseCase;
@@ -17,6 +18,7 @@ import com.ledgepay.catalogo.application.usecases.RegistrarSedeUseCase;
 import com.ledgepay.catalogo.application.usecases.RegistrarZonaUseCase;
 import com.ledgepay.catalogo.domain.repositories.EventoRepository;
 import com.ledgepay.catalogo.domain.repositories.FaseVentaRepository;
+import com.ledgepay.catalogo.domain.repositories.OrganizadorRepository;
 import com.ledgepay.catalogo.domain.repositories.PuntoAccesoZonaRepository;
 import com.ledgepay.catalogo.domain.repositories.SedeRepository;
 import com.ledgepay.catalogo.domain.repositories.ZonaSedeRepository;
@@ -65,8 +67,9 @@ public class UseCaseConfig {
     }
 
     @Bean
-    RegisterEventoUseCase registerEventoUseCase(EventoRepository eventoRepository, SedeRepository sedeRepository) {
-        return new RegisterEventoUseCase(eventoRepository, sedeRepository);
+    RegisterEventoUseCase registerEventoUseCase(EventoRepository eventoRepository, SedeRepository sedeRepository,
+            OrganizadorRepository organizadorRepository, PagosPort pagosPort) {
+        return new RegisterEventoUseCase(eventoRepository, sedeRepository, organizadorRepository, pagosPort);
     }
 
     @Bean

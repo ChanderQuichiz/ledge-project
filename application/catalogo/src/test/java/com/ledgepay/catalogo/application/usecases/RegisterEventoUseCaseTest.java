@@ -8,6 +8,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -22,17 +23,26 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.ledgepay.catalogo.application.command.FechaEventoSuperpuestaException;
 import com.ledgepay.catalogo.application.command.RegisterEventoCommand;
+import com.ledgepay.catalogo.application.exceptions.DeudaVencidaException;
+import com.ledgepay.catalogo.application.exceptions.OrganizadorNoVerificadoException;
+import com.ledgepay.catalogo.application.exceptions.OrganizadorNotFoundException;
 import com.ledgepay.catalogo.application.exceptions.SedeNotFoundException;
+import com.ledgepay.catalogo.application.port.out.PagosPort;
 import com.ledgepay.catalogo.application.result.RegisterEventoResult;
 import com.ledgepay.catalogo.domain.Evento;
+import com.ledgepay.catalogo.domain.Organizador;
 import com.ledgepay.catalogo.domain.Sede;
 import com.ledgepay.catalogo.domain.ZonaSede;
 import com.ledgepay.catalogo.domain.exceptions.AforoInsuficienteException;
-import com.ledgepay.catalogo.domain.exceptions.HorasPreviasInvalidaException;
-import com.ledgepay.catalogo.domain.exceptions.RangoFechaInvalidoException;
 import com.ledgepay.catalogo.domain.repositories.EventoRepository;
+import com.ledgepay.catalogo.domain.repositories.OrganizadorRepository;
 import com.ledgepay.catalogo.domain.repositories.SedeRepository;
+import com.ledgepay.catalogo.domain.value_objects.EstadoEvento;
+import com.ledgepay.catalogo.domain.value_objects.EstadoOrganizador;
+import com.ledgepay.catalogo.domain.value_objects.PoliticaCancelacion;
+import com.ledgepay.catalogo.domain.value_objects.RestriccionEdad;
 import com.ledgepay.catalogo.domain.value_objects.TipoZona;
 
 @ExtendWith(MockitoExtension.class)
@@ -43,6 +53,12 @@ class RegisterEventoUseCaseTest {
 
     @Mock
     private SedeRepository sedeRepository;
+
+    @Mock
+    private OrganizadorRepository organizadorRepository;
+
+    @Mock
+    private PagosPort pagosPort;
 
     @Captor
     private ArgumentCaptor<Evento> eventoCaptor;
@@ -56,8 +72,9 @@ class RegisterEventoUseCaseTest {
         LocalDateTime fin = inicio.plusDays(1);
         ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
         when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
+        stubsBase(sedeId, organizadorId);
 
-        RegisterEventoResult result = new RegisterEventoUseCase(eventoRepository, sedeRepository)
+        RegisterEventoResult result = useCase()
             .execute(command(sedeId, organizadorId, creadoPor, inicio, fin));
 
         verify(eventoRepository).save(eventoCaptor.capture());
@@ -83,7 +100,7 @@ class RegisterEventoUseCaseTest {
         assertThat(result.categoria()).isEqualTo("Concierto");
         assertThat(result.fechaInicio()).isEqualTo(inicio.toString());
         assertThat(result.fechaFin()).isEqualTo(fin.toString());
-        assertThat(result.restriccionEdad()).isEqualTo("TODO_PUBLICO");
+        assertThat(result.restriccionEdad()).isEqualTo("MAYOR_DE_14");
         assertThat(result.politicaCancelacion()).isEqualTo("ESTANDAR");
         assertThat(result.permiteReingreso()).isTrue();
         assertThat(result.maxReingresos()).isEqualTo(2);
@@ -98,7 +115,7 @@ class RegisterEventoUseCaseTest {
         when(sedeRepository.findById(sedeId)).thenReturn(Optional.empty());
         LocalDateTime inicio = LocalDateTime.now().plusDays(4);
 
-        assertThatThrownBy(() -> new RegisterEventoUseCase(eventoRepository, sedeRepository)
+        assertThatThrownBy(() -> useCase()
             .execute(command(sedeId, UUID.randomUUID(), UUID.randomUUID(), inicio, inicio.plusDays(1))))
             .isInstanceOf(SedeNotFoundException.class)
             .hasMessage("No se encontró la sede con ID: " + sedeId);
@@ -112,7 +129,7 @@ class RegisterEventoUseCaseTest {
         when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of())));
         LocalDateTime inicio = LocalDateTime.now().plusDays(4);
 
-        assertThatThrownBy(() -> new RegisterEventoUseCase(eventoRepository, sedeRepository)
+        assertThatThrownBy(() -> useCase()
             .execute(command(sedeId, UUID.randomUUID(), UUID.randomUUID(), inicio, inicio.plusDays(1))))
             .isInstanceOf(AforoInsuficienteException.class)
             .hasMessage("La sede debe tener al menos una zona para poder registrar un evento");
@@ -121,33 +138,88 @@ class RegisterEventoUseCaseTest {
     }
 
     @Test
-    void execute_debeLanzarExcepcion_cuandoFechaInicioMuyCercana() {
+    void execute_debeLanzarExcepcion_cuandoNoExisteElOrganizador() {
         UUID sedeId = UUID.randomUUID();
+        UUID organizadorId = UUID.randomUUID();
+        LocalDateTime inicio = LocalDateTime.now().plusDays(4);
         ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
         when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
-        LocalDateTime inicio = LocalDateTime.now().plusDays(1);
+        when(organizadorRepository.findById(organizadorId)).thenReturn(Optional.empty());
 
-        assertThatThrownBy(() -> new RegisterEventoUseCase(eventoRepository, sedeRepository)
-            .execute(command(sedeId, UUID.randomUUID(), UUID.randomUUID(), inicio, inicio.plusDays(1))))
-            .isInstanceOf(HorasPreviasInvalidaException.class)
-            .hasMessage("La fecha de inicio del evento debe ser al menos 72 horas después de la fecha de creación del evento.");
+        assertThatThrownBy(() -> useCase()
+            .execute(command(sedeId, organizadorId, UUID.randomUUID(), inicio, inicio.plusDays(1))))
+            .isInstanceOf(OrganizadorNotFoundException.class)
+            .hasMessage("No se encontró el organizador con ID: " + organizadorId);
+
+        verifyNoInteractions(pagosPort, eventoRepository);
+    }
+
+    @Test
+    void execute_debeLanzarExcepcion_cuandoOrganizadorNoEstaVerificado() {
+        UUID sedeId = UUID.randomUUID();
+        UUID organizadorId = UUID.randomUUID();
+        LocalDateTime inicio = LocalDateTime.now().plusDays(4);
+        ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
+        when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
+        when(organizadorRepository.findById(organizadorId))
+            .thenReturn(Optional.of(organizador(organizadorId, EstadoOrganizador.PENDIENTE_VERIFICACION)));
+
+        assertThatThrownBy(() -> useCase()
+            .execute(command(sedeId, organizadorId, UUID.randomUUID(), inicio, inicio.plusDays(1))))
+            .isInstanceOf(OrganizadorNoVerificadoException.class)
+            .hasMessage("El organizador no está verificado y no puede registrar eventos");
+
+        verifyNoInteractions(pagosPort, eventoRepository);
+    }
+
+    @Test
+    void execute_debeLanzarExcepcion_cuandoOrganizadorTieneDeudas() {
+        UUID sedeId = UUID.randomUUID();
+        UUID organizadorId = UUID.randomUUID();
+        LocalDateTime inicio = LocalDateTime.now().plusDays(4);
+        ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
+        when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
+        when(organizadorRepository.findById(organizadorId))
+            .thenReturn(Optional.of(organizador(organizadorId, EstadoOrganizador.VERIFICADO)));
+        when(pagosPort.deudasVencidasPorOrganizador(organizadorId)).thenReturn(true);
+
+        assertThatThrownBy(() -> useCase()
+            .execute(command(sedeId, organizadorId, UUID.randomUUID(), inicio, inicio.plusDays(1))))
+            .isInstanceOf(DeudaVencidaException.class)
+            .hasMessage("El organizador tiene deuda vencida y no puede registrar un nuevo evento");
+
+        verifyNoInteractions(eventoRepository);
+    }
+
+    @Test
+    void execute_debeLanzarExcepcion_cuandoFechasSeSuperponen() {
+        UUID sedeId = UUID.randomUUID();
+        UUID organizadorId = UUID.randomUUID();
+        LocalDateTime inicio = LocalDateTime.now().plusDays(4);
+        LocalDateTime fin = inicio.plusDays(1);
+        ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
+        when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
+        stubsBase(sedeId, organizadorId);
+        when(eventoRepository.findAllBySedeId(sedeId))
+            .thenReturn(List.of(evento(sedeId, inicio.plusDays(1), inicio.plusDays(2), EstadoEvento.PUBLICADO)));
+
+        assertThatThrownBy(() -> useCase()
+            .execute(command(sedeId, organizadorId, UUID.randomUUID(), inicio, fin)))
+            .isInstanceOf(FechaEventoSuperpuestaException.class)
+            .hasMessage("La fecha del evento se superpone con otro evento en la misma sede.");
 
         verify(eventoRepository, never()).save(any());
     }
 
-    @Test
-    void execute_debeLanzarExcepcion_cuandoFechaFinNoPosteriorAInicio() {
-        UUID sedeId = UUID.randomUUID();
-        ZonaSede zona = ZonaSede.crear(sedeId, "Zona A", TipoZona.NUMERADA, 120);
-        when(sedeRepository.findById(sedeId)).thenReturn(Optional.of(sede(sedeId, List.of(zona))));
-        LocalDateTime inicio = LocalDateTime.now().plusDays(4);
+    private RegisterEventoUseCase useCase() {
+        return new RegisterEventoUseCase(eventoRepository, sedeRepository, organizadorRepository, pagosPort);
+    }
 
-        assertThatThrownBy(() -> new RegisterEventoUseCase(eventoRepository, sedeRepository)
-            .execute(command(sedeId, UUID.randomUUID(), UUID.randomUUID(), inicio, inicio.minusDays(1))))
-            .isInstanceOf(RangoFechaInvalidoException.class)
-            .hasMessage("La fecha de fin del evento debe ser posterior a la fecha de inicio del evento.");
-
-        verify(eventoRepository, never()).save(any());
+    private void stubsBase(UUID sedeId, UUID organizadorId) {
+        when(organizadorRepository.findById(organizadorId))
+            .thenReturn(Optional.of(organizador(organizadorId, EstadoOrganizador.VERIFICADO)));
+        when(pagosPort.deudasVencidasPorOrganizador(organizadorId)).thenReturn(false);
+        when(eventoRepository.findAllBySedeId(sedeId)).thenReturn(List.of());
     }
 
     private Sede sede(UUID sedeId, List<ZonaSede> zonas) {
@@ -155,6 +227,37 @@ class RegisterEventoUseCaseTest {
             LocalDateTime.now(), List.of(), List.of());
         ReflectionTestUtils.setField(sede, "zonas", new ArrayList<>(zonas));
         return sede;
+    }
+
+    private Organizador organizador(UUID organizadorId, EstadoOrganizador estado) {
+        LocalDateTime ahora = LocalDateTime.now();
+        return new Organizador(organizadorId, "12345678901", "Organizador", estado,
+            new BigDecimal("5.00"), UUID.randomUUID(), ahora, ahora, ahora);
+    }
+
+    private Evento evento(UUID sedeId, LocalDateTime inicio, LocalDateTime fin, EstadoEvento estado) {
+        Evento evento = Evento.registrar(
+            sedeId,
+            UUID.randomUUID(),
+            "Evento existente",
+            "Descripcion",
+            "Concierto",
+            RestriccionEdad.MAYOR_DE_14,
+            PoliticaCancelacion.ESTANDAR,
+            true,
+            2,
+            false,
+            false,
+            6,
+            inicio,
+            fin,
+            inicio.minusMinutes(30),
+            inicio.minusDays(2),
+            inicio.minusDays(1),
+            UUID.randomUUID()
+        );
+        ReflectionTestUtils.setField(evento, "estado", estado);
+        return evento;
     }
 
     private RegisterEventoCommand command(UUID sedeId, UUID organizadorId, UUID creadoPor,
@@ -168,7 +271,7 @@ class RegisterEventoUseCaseTest {
             inicio.toString(),
             fin.toString(),
             inicio.minusMinutes(30).toString(),
-            "TODO_PUBLICO",
+            "MAYOR_DE_14",
             "ESTANDAR",
             true,
             2,
